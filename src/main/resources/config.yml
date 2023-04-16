@@ -1,0 +1,4 @@
+only-log-play: true
+skip-move-packets: true
+ignored-packets:
+  - "ignored"
