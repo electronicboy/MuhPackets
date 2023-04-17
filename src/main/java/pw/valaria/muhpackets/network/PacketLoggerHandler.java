@@ -66,10 +66,6 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
     if (connection.protocol != ConnectionProtocol.PLAY && muhPackets.getMuhPacketsConfig().isLogPlayOnly()) {
       return null;
     }
-    final Set<String> ignoredPackets = muhPackets.getMuhPacketsConfig().getIgnoredPackets();
-    if (!ignoredPackets.isEmpty() && ignoredPackets.contains(msg.getClass().getSimpleName())) {
-      return null;
-    }
 
     if (msg instanceof Packet<?>) {
       return new LogRecord(connection.protocol, (Packet<?>) msg);

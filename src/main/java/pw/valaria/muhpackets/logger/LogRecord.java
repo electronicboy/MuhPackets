@@ -7,7 +7,6 @@ import net.minecraft.network.chat.LastSeenMessages;
 import net.minecraft.network.chat.MessageSignature;
 import net.minecraft.network.chat.RemoteChatSession;
 import net.minecraft.network.protocol.Packet;
-import net.minecraft.world.entity.player.ProfileKeyPair;
 import net.minecraft.world.phys.HitResult;
 
 import java.io.IOException;
@@ -19,6 +18,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 public class LogRecord {
   private final static int classIndex = "net.minecraft.network.protocol.".length();
@@ -32,8 +32,12 @@ public class LogRecord {
     this.msg = msg;
   }
 
-  public void write(Writer writer, boolean writeFields) throws IOException {
+  public void write(Writer writer, boolean writeFields, Set<String> ignoredPackets) throws IOException {
     final String deobf = ObfHelper.INSTANCE.deobfClassName(msg.getClass().getName()).substring(classIndex);
+    if (!ignoredPackets.isEmpty() && ignoredPackets.contains(deobf.substring(deobf.lastIndexOf('.') + 1))) {
+      return;
+    }
+
     final Map<String, String> fields = writeFields ? populateFieldMap() : Collections.emptyMap();
     final String time = DEFAULT.format(Instant.now());
     writer.write("[%s] [%s] [%s] %s\n".formatted(time, protocol, deobf, fields));

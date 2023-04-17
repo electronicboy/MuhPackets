@@ -33,7 +33,7 @@ public class LoggingSession {
     if (records.isEmpty()) return this.isActive;
     try (FileWriter writer = new FileWriter(target, true)) {
       while (records.peek() != null) {
-        records.pop().write(writer, true);
+        records.pop().write(writer, true, muhPackets.getMuhPacketsConfig().getIgnoredPackets());
       }
     } catch (IOException e) {
     }
