@@ -22,7 +22,7 @@ import java.util.Set;
 
 public class LogRecord {
   private final static int classIndex = "net.minecraft.network.protocol.".length();
-  private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_INSTANT;
+  private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
   private final ConnectionProtocol protocol;
   private final Packet<?> msg;
 
