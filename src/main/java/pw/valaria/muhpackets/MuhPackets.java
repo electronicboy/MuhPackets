@@ -58,7 +58,7 @@ public final class MuhPackets extends JavaPlugin implements Listener {
         final LoggingSession session = iterator.next();
         if (!session.process()) {
           sessions.remove(session);
-          logger.info("Closing session: " + session.toString());
+          getLogger().info("Closing session: " + session.toString());
         }
       }
     } catch (Throwable ignored) {
