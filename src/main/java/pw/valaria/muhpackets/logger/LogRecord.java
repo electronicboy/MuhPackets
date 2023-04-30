@@ -14,6 +14,7 @@ import java.io.Writer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.HashMap;
@@ -25,6 +26,7 @@ public class LogRecord {
   private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
   private final ConnectionProtocol protocol;
   private final Packet<?> msg;
+  private final LocalDateTime time = LocalDateTime.now();
 
   public LogRecord(ConnectionProtocol protocol, Packet<?> msg) {
 
@@ -39,7 +41,7 @@ public class LogRecord {
     }
 
     final Map<String, String> fields = writeFields ? populateFieldMap() : Collections.emptyMap();
-    final String time = DEFAULT.format(Instant.now());
+    final String time = DEFAULT.format(this.time);
     writer.write("[%s] [%s] [%s] %s\n".formatted(time, protocol, deobf, fields));
   }
 
