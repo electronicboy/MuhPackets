@@ -6,6 +6,8 @@ import io.papermc.paper.network.ChannelInitializeListenerHolder;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.filefilter.AgeFileFilter;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -20,10 +22,11 @@ import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Instant;
+import java.time.ZonedDateTime;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @DefaultQualifier(NonNull.class)
@@ -46,6 +49,20 @@ public final class MuhPackets extends JavaPlugin implements Listener {
     Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::doPoll, 20, 20);
 
     this.reloadConfig();
+
+    if (this.getMuhPacketsConfig().getClearOldFilesDays() > 0) {
+      final Instant retentionFilePeriod = ZonedDateTime.now()
+        .minusDays(this.getMuhPacketsConfig().getClearOldFilesDays()).toInstant();
+      final AgeFileFilter filter = new AgeFileFilter(retentionFilePeriod.toEpochMilli());
+      final Iterator<File> fileIterator = FileUtils.listFiles(new File(getDataFolder(), "logs/"), null, true).iterator();
+      fileIterator.forEachRemaining(file -> {
+        if (filter.accept(file)) {
+          if (file.delete()) {
+            getLogger().info("Deleting " + file.toString());
+          }
+        }
+      });
+    }
   }
 
   private void doPoll() {

@@ -9,6 +9,7 @@ public class MuhPacketsConfig {
   private boolean logPlayOnly = true;
   private boolean skipMovePackets;
   private Set<String> ignoredPackets = new HashSet<>();
+  private int clearOldFilesDays = -1;
 
   public MuhPacketsConfig(MuhPackets muhPackets) {
     this.muhPackets = muhPackets;
@@ -18,6 +19,7 @@ public class MuhPacketsConfig {
     this.logPlayOnly = muhPackets.getConfig().getBoolean("only-log-play");
     this.skipMovePackets= muhPackets.getConfig().getBoolean("skip-move-packets");
     this.ignoredPackets = Set.copyOf(muhPackets.getConfig().getStringList("ignored-packets"));
+    this.clearOldFilesDays = muhPackets.getConfig().getInt("clear-old-files-days", -1);
   }
 
   public boolean isLogPlayOnly() {
@@ -30,5 +32,9 @@ public class MuhPacketsConfig {
 
   public Set<String> getIgnoredPackets() {
     return ignoredPackets;
+  }
+
+  public int getClearOldFilesDays() {
+    return clearOldFilesDays;
   }
 }
