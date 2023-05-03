@@ -75,6 +75,7 @@ public final class MuhPackets extends JavaPlugin implements Listener {
         final LoggingSession session = iterator.next();
         if (!session.process()) {
           sessions.remove(session);
+          processRemoval(session);
           getLogger().info("Closing session: " + session.toString());
         }
       }
@@ -121,5 +122,13 @@ public final class MuhPackets extends JavaPlugin implements Listener {
     final LoggingSession loggingSession = new LoggingSession(this, name, target);
     this.sessions.add(loggingSession);
     return loggingSession;
+  }
+
+  private void processRemoval(LoggingSession session) {
+    if (muhPacketsConfig.compressionSchema != null) {
+      Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+        session.compress(muhPacketsConfig.compressionSchema);
+      });
+    }
   }
 }

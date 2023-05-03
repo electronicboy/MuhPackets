@@ -3,3 +3,5 @@ skip-move-packets: true
 ignored-packets:
   - "ignored"
 clear-old-files-days: -1
+# none, gzip
+compress-old-files-schema: none
