@@ -34,11 +34,13 @@ public final class MuhPackets extends JavaPlugin implements Listener {
   Key network_key = Key.key("muhpackets", "hook");
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
   private final AtomicBoolean running = new AtomicBoolean(false);
+  private File logsFolder;
 
   List<LoggingSession> sessions = new CopyOnWriteArrayList<>();
 
   @Override
   public void onEnable() {
+    logsFolder = new File(getDataFolder(), "logs/");
     saveDefaultConfig();
     io.papermc.paper.network.ChannelInitializeListenerHolder.addListener(network_key, new ChannelInitializeListener() {
       @Override
@@ -51,17 +53,19 @@ public final class MuhPackets extends JavaPlugin implements Listener {
     this.reloadConfig();
 
     if (this.getMuhPacketsConfig().getClearOldFilesDays() > 0) {
-      final Instant retentionFilePeriod = ZonedDateTime.now()
-        .minusDays(this.getMuhPacketsConfig().getClearOldFilesDays()).toInstant();
-      final AgeFileFilter filter = new AgeFileFilter(retentionFilePeriod.toEpochMilli());
-      final Iterator<File> fileIterator = FileUtils.listFiles(new File(getDataFolder(), "logs/"), null, true).iterator();
-      fileIterator.forEachRemaining(file -> {
-        if (filter.accept(file)) {
-          if (file.delete()) {
-            getLogger().info("Deleting " + file.toString());
+      if (logsFolder.exists()) {
+        final Instant retentionFilePeriod = ZonedDateTime.now()
+          .minusDays(this.getMuhPacketsConfig().getClearOldFilesDays()).toInstant();
+        final AgeFileFilter filter = new AgeFileFilter(retentionFilePeriod.toEpochMilli());
+        final Iterator<File> fileIterator = FileUtils.listFiles(logsFolder, null, true).iterator();
+        fileIterator.forEachRemaining(file -> {
+          if (filter.accept(file)) {
+            if (file.delete()) {
+              getLogger().info("Deleting " + file.toString());
+            }
           }
-        }
-      });
+        });
+      }
     }
   }
 
@@ -109,7 +113,7 @@ public final class MuhPackets extends JavaPlugin implements Listener {
 
   @Nullable
   public LoggingSession createLoggingSession(String name) {
-    final File targetDir = new File(getDataFolder(), "logs/" + name);
+    final File targetDir = new File(logsFolder, name);
     final File target = new File(targetDir, System.currentTimeMillis() + ".log");
     try {
       target.getParentFile().mkdirs();
