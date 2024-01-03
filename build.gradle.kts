@@ -18,12 +18,12 @@ java {
 }
 
 repositories {
-  maven("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+  mavenCentral()
 }
 
 dependencies {
-  paperweight.paperDevBundle("1.19.4-R0.1-SNAPSHOT")
-  //implementation("xyz.jpenilla", "reflection-remapper", "0.1.0-SNAPSHOT")
+  paperweight.paperDevBundle("1.20.4-R0.1-SNAPSHOT")
+  implementation("xyz.jpenilla", "reflection-remapper", "0.1.0")
 
   // paperweight.foliaDevBundle("1.19.4-R0.1-SNAPSHOT")
   // paperweight.devBundle("com.example.paperfork", "1.19.4-R0.1-SNAPSHOT")
