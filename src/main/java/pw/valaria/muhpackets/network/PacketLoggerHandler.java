@@ -83,7 +83,9 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
 
   @Override
   public void channelUnregistered(ChannelHandlerContext ctx) throws Exception {
-    loggingSession.close();
+    if (loggingSession != null) {
+      loggingSession.close();
+    }
     super.channelUnregistered(ctx);
   }
 
