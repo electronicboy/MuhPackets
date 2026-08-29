@@ -125,7 +125,10 @@ public class LogRecord {
         case '\t' -> out.append("\\t");
         case '"' -> out.append(quote ? "\\\"" : "\"");
         default -> {
-          if (c < 0x20 || c == 0x7f) {
+          // All ISO controls, not just the ASCII ones: the C1 range (U+0080-U+009F) includes CSI,
+          // which a terminal will happily interpret as an escape sequence when an operator views a
+          // log full of attacker-controlled packet fields and player names.
+          if (Character.isISOControl(c)) {
             out.append("\\u%04x".formatted((int) c));
           } else {
             out.append(c);
@@ -141,7 +144,7 @@ public class LogRecord {
   private static boolean needsQuoting(String value) {
     for (int i = 0; i < value.length(); i++) {
       final char c = value.charAt(i);
-      if (c == ' ' || c == '"' || c == '\\' || c < 0x20 || c == 0x7f) {
+      if (c == ' ' || c == '"' || c == '\\' || Character.isISOControl(c)) {
         return true;
       }
     }
