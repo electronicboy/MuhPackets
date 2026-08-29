@@ -1,6 +1,7 @@
 package pw.valaria.muhpackets.logger;
 
 import net.minecraft.network.ConnectionProtocol;
+import org.jetbrains.annotations.Nullable;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.LastSeenMessages;
 import net.minecraft.network.chat.MessageSignature;
@@ -23,11 +24,11 @@ import java.util.Set;
 public class LogRecord {
   private final static int classIndex = "net.minecraft.network.protocol.".length();
   private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
-  private final ConnectionProtocol protocol;
+  private final @Nullable ConnectionProtocol protocol;
   private final Packet<?> msg;
   private final LocalDateTime time = LocalDateTime.now();
 
-  public LogRecord(ConnectionProtocol protocol, Packet<?> msg) {
+  public LogRecord(@Nullable ConnectionProtocol protocol, Packet<?> msg) {
 
     this.protocol = protocol;
     this.msg = msg;
@@ -41,7 +42,7 @@ public class LogRecord {
 
     final Map<String, String> fields = writeFields ? populateFieldMap() : Collections.emptyMap();
     final String time = DEFAULT.format(this.time);
-    writer.write("[%s] [%s] [%s] %s\n".formatted(time, protocol, deobf, fields));
+    writer.write("[%s] [%s] [%s] %s\n".formatted(time, protocol == null ? "UNKNOWN" : protocol, deobf, fields));
   }
 
   private Map<String, String> populateFieldMap() {

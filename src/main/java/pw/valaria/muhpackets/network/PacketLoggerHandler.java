@@ -6,10 +6,12 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import net.minecraft.network.Connection;
 import net.minecraft.network.ConnectionProtocol;
+import net.minecraft.network.PacketListener;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.login.ServerboundHelloPacket;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import pw.valaria.muhpackets.MuhPackets;
 import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
@@ -17,17 +19,22 @@ import pw.valaria.muhpackets.logger.LoggingSession;
 public class PacketLoggerHandler extends ChannelDuplexHandler {
 
   private final MuhPackets muhPackets;
-  private final Connection connection;
+  private final @Nullable Connection connection;
   private LoggingSession loggingSession;
 
   public PacketLoggerHandler(MuhPackets muhPackets, Channel channel) {
     this.muhPackets = muhPackets;
 
     final ChannelHandler packetHandler = channel.pipeline().get("packet_handler");
-    if (packetHandler == null) {
-      muhPackets.getLogger().info("Failed to get packet handler?!");
+    if (packetHandler instanceof Connection conn) {
+      this.connection = conn;
+    } else {
+      // Previously this logged and then carried on with a null connection, turning every
+      // subsequent packet on this channel into an NPE.
+      this.connection = null;
+      muhPackets.getLogger().warning("No usable packet_handler on channel " + channel
+        + "; packets on this connection will not be logged");
     }
-    this.connection = (Connection) packetHandler;
   }
 
   @Override
@@ -68,8 +75,10 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
     }
 
     // Paper has been Mojang-mapped at runtime since 1.20.5, and Connection#protocol was removed
-    // outright; the packet listener is the supported way to ask which phase we are in.
-    final ConnectionProtocol protocol = connection.getPacketListener().protocol();
+    // outright; the packet listener is the supported way to ask which phase we are in. It is null
+    // very early in a connection's life, so the phase is simply unknown at that point.
+    final PacketListener listener = connection == null ? null : connection.getPacketListener();
+    final ConnectionProtocol protocol = listener == null ? null : listener.protocol();
 
     if (protocol != ConnectionProtocol.PLAY && muhPackets.getMuhPacketsConfig().isLogPlayOnly()) {
       return null;
