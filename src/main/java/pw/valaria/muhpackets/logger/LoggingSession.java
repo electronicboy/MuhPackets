@@ -8,6 +8,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -76,33 +78,50 @@ public class LoggingSession {
       return stillNeeded();
     }
 
-    int written = 0;
-    try {
-      try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
-        // Weakly consistent iterator, head first. Only this thread removes, and others only append,
-        // so the first 'written' entries are exactly the ones handed to the writer.
-        for (final LogRecord record : records) {
-          record.write(writer);
-          written++;
-        }
+    // Take the batch up front rather than iterating and then removing that many from the head.
+    // A ConcurrentLinkedDeque iterator is only weakly consistent, so "the first N entries are the
+    // ones just written" holds only while this is the sole thread removing - true today, but it is
+    // a silent data-loss bug the moment that stops being true. Polling does not depend on
+    // iteration order at all, and a failed write puts the batch back.
+    final List<LogRecord> batch = new ArrayList<>();
+    LogRecord record;
+    while ((record = records.poll()) != null) {
+      batch.add(record);
+      buffered.decrementAndGet();
+    }
+
+    try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
+      for (final LogRecord queued : batch) {
+        queued.write(writer);
       }
-      // Reached only once the writer has closed, and therefore flushed, cleanly. Removing before
-      // this point meant a failure in that final flush discarded records that were never written.
-      for (int i = 0; i < written; i++) {
-        records.poll();
-        buffered.decrementAndGet();
-      }
-      writeFailureReported = false;
-      drainFailures = 0;
+      // Closing, and therefore flushing, happens on the way out of this block. Anything it throws
+      // is caught below, so a failed flush restores the batch rather than dropping it.
     } catch (IOException e) {
+      restore(batch);
       drainFailures++;
       if (!writeFailureReported) {
         writeFailureReported = true;
         muhPackets.getLogger().log(Level.WARNING, "Could not write packet log " + target, e);
       }
+      reportDropped();
+      return stillNeeded();
     }
+
+    writeFailureReported = false;
+    drainFailures = 0;
     reportDropped();
     return stillNeeded();
+  }
+
+  /**
+   * Returns an unwritten batch to the head of the deque, preserving order relative to records that
+   * arrived while the write was being attempted.
+   */
+  private void restore(List<LogRecord> batch) {
+    for (int i = batch.size() - 1; i >= 0; i--) {
+      records.addFirst(batch.get(i));
+      buffered.incrementAndGet();
+    }
   }
 
   /**
