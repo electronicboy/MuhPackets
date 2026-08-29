@@ -1,14 +1,59 @@
-# paperweight-test-plugin
+# MuhPackets
 
-jmp's test plugin for [`paperweight-userdev`](https://github.com/PaperMC/paperweight/tree/main/paperweight-userdev) development
+A [Paper](https://papermc.io) plugin that dumps inbound packets to disk, one log file per player
+session. It exists for debugging and protocol analysis — when you need to see exactly what a client
+sent, in order, with field values.
 
-(also serves as an example until more thorough documentation is created)
+This is a debugging tool, not something you want running on a busy production server: it reflects
+over every packet it logs and writes them to disk continuously.
 
-### notes (read these)
+## What it logs
 
-- `build.gradle.kts` and `settings.gradle.kts` both contain important configuration.
-- `paperweight-userdev` automatically detects shadow and will use `shadowJar` as input for `reobfJar`. This means no extra configuration is required to use `paperweight-userdev` with shadow. See the `shadow` branch on this repository for an exmaple usage of shadow with `paperweight-userdev`.
-- The `plugin-yml` and `run-paper` Gradle plugins are both optional, however I use them in almost all my plugin projects and recommend at least trying them out. `plugin-yml` auto-generates your plugin.yml file from configuration in the build file, and `run-paper` allows for launching a test server with your plugin through the `runServer` and `runMojangMappedServer` tasks.
-- Due to a [gradle bug](https://github.com/gradle/gradle/issues/17559), independently applying `paperweight-userdev` to multiple projects in a build can result in errors. To work around this, apply `paperweight-userdev` to the root project with `apply false` (i.e., `id("...") version "..." apply false` in Kotlin DSL), and then when applying `paperweight-userdev` to subprojects don't include a version specification. A more advanced solution would involve adding `paperweight-userdev` as a dependency to your build logic, see [`reflection-remapper`](https://github.com/jpenilla/reflection-remapper) and the [`source-remap`](https://github.com/PaperMC/paperweight-test-plugin/tree/source-remap) branch on this repo for examples of this.
-- The [`source-remap`](https://github.com/PaperMC/paperweight-test-plugin/tree/source-remap) branch on this repo has a special `remapPluginSources` task to remap the source code in `src/main/java` from spigot to Mojang mappings, outputting remapped source in `/src/main/mojangMappedJava`. Note that this will only remap your code, not update it from a prior version. Meaning you must be using the dev bundle for the Minecraft version your source code is for when remapping.
-- `paperweight-userdev` doesn't provide any utilities for doing reflection. [`reflection-remapper`](https://github.com/jpenilla/reflection-remapper) is a companion library to `paperweight-userdev` assisting with reflection on remapped code.
+One line per packet, written to `plugins/MuhPackets/logs/<player>/<timestamp>.log`:
+
+```
+[2026-08-29T19:04:11.482] [PLAY] [game.ServerboundMovePlayerPacket$Pos] {x=124.5, y=64.0, z=-88.3, onGround=true}
+```
+
+Fields are read reflectively from the packet's whole class hierarchy. A few types are deliberately
+skipped because they are noise or contain sensitive/unbounded data — raw `FriendlyByteBuf` payloads
+and chat signature data (`MessageSignature`, `LastSeenMessages.Update`). See `LogRecord#shouldLogField`.
+
+Only **inbound** (serverbound) packets are logged. A session starts when the login hello packet
+arrives — that is where the player name comes from — so pre-login traffic is not captured.
+
+## Configuration
+
+`plugins/MuhPackets/config.yml`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `only-log-play` | `true` | Only log packets once the connection reaches the `PLAY` phase. |
+| `skip-move-packets` | `true` | Drop movement packets, which otherwise dominate the log. |
+| `ignored-packets` | `[]` | Simple class names to skip, e.g. `ServerboundKeepAlivePacket`. |
+| `clear-old-files-days` | `-1` | Delete logs older than N days on startup. `-1` disables cleanup. |
+
+`/muhpackets` (permission `muhpackets.muhpackets`, default OP) reloads the config. Changes apply to
+running sessions.
+
+## Building
+
+```sh
+./gradlew build          # produces a Mojang-mapped plugin jar in build/libs
+./gradlew runServer      # launch a test server with the plugin installed
+```
+
+Requires a JDK 21+ toolchain. The build uses
+[`paperweight-userdev`](https://github.com/PaperMC/paperweight) to compile against Paper's internal
+server classes, so the first build downloads and decompiles a Paper server — expect it to take a
+while and want a few GB of RAM.
+
+## Versions
+
+The plugin compiles against Paper internals (`net.minecraft.*`), so it is tied to Paper's server
+internals rather than the Bukkit API. Since Paper 1.20.5 the server runs **Mojang-mapped at runtime**,
+which means no reobfuscation step and no reflection tricks are needed to read packet fields — earlier
+versions of this plugin carried a `reflection-remapper` dependency purely to work around that, and it
+is now gone.
+
+See `CLAUDE.md` for the internal architecture.
