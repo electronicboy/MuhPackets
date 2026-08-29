@@ -6,8 +6,6 @@ import io.papermc.paper.network.ChannelInitializeListenerHolder;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.filefilter.AgeFileFilter;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -23,13 +21,17 @@ import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZonedDateTime;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 
 @DefaultQualifier(NonNull.class)
 public final class MuhPackets extends JavaPlugin implements Listener {
@@ -58,23 +60,68 @@ public final class MuhPackets extends JavaPlugin implements Listener {
 
     this.reloadConfig();
 
-    if (this.getMuhPacketsConfig().getClearOldFilesDays() > 0) {
-      if (logsFolder.exists()) {
-        final Instant retentionFilePeriod = ZonedDateTime.now()
-          .minusDays(this.getMuhPacketsConfig().getClearOldFilesDays()).toInstant();
-        final AgeFileFilter filter = new AgeFileFilter(retentionFilePeriod.toEpochMilli());
-        final Iterator<File> fileIterator = FileUtils.listFiles(logsFolder, null, true).iterator();
-        fileIterator.forEachRemaining(file -> {
-          if (filter.accept(file)) {
-            if (file.delete()) {
-              getLogger().info("Deleting " + file.toString());
-            }
-          }
-        });
-      }
-    }
+    clearOldLogs(this.getMuhPacketsConfig().getClearOldFilesDays());
 
     this.accepting = true;
+  }
+
+  /**
+   * Deletes logs older than {@code days}, then prunes the directories left empty behind them.
+   *
+   * @param days retention in days; zero or negative disables cleanup
+   */
+  private void clearOldLogs(int days) {
+    if (days <= 0 || !logsFolder.isDirectory()) {
+      return;
+    }
+    final Instant cutoff = ZonedDateTime.now().minusDays(days).toInstant();
+    final Path root = logsFolder.toPath();
+    int deleted = 0;
+    try (Stream<Path> walk = Files.walk(root)) {
+      final List<Path> stale = walk
+        .filter(Files::isRegularFile)
+        .filter(path -> lastModified(path).isBefore(cutoff))
+        .toList();
+      for (final Path path : stale) {
+        try {
+          Files.delete(path);
+          deleted++;
+        } catch (IOException e) {
+          getLogger().log(Level.WARNING, "Could not delete old log " + path, e);
+        }
+      }
+    } catch (IOException e) {
+      getLogger().log(Level.WARNING, "Could not scan " + logsFolder + " for old logs", e);
+      return;
+    }
+
+    // Sessions whose logs have all expired otherwise leave an empty directory behind forever.
+    try (Stream<Path> walk = Files.walk(root)) {
+      walk.sorted(Comparator.reverseOrder())
+        .filter(path -> !path.equals(root) && Files.isDirectory(path))
+        .forEach(path -> {
+          try (Stream<Path> entries = Files.list(path)) {
+            if (entries.findAny().isEmpty()) {
+              Files.delete(path);
+            }
+          } catch (IOException ignored) {
+            // Best effort; a directory we cannot prune is not worth failing startup over.
+          }
+        });
+    } catch (IOException ignored) {
+    }
+
+    if (deleted > 0) {
+      getLogger().info("Deleted " + deleted + " packet log(s) older than " + days + " day(s)");
+    }
+  }
+
+  private Instant lastModified(Path path) {
+    try {
+      return Files.getLastModifiedTime(path).toInstant();
+    } catch (IOException e) {
+      return Instant.now();
+    }
   }
 
   /** Whether packet handlers should keep buffering records. */
