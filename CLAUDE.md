@@ -90,5 +90,11 @@ has no `protocol` field any more (gone by 1.21.4) - use `getPacketListener().pro
 
 ## Style
 
-`.editorconfig`: 2-space indent, UTF-8, final newline. Existing code uses `@DefaultQualifier(NonNull.class)`
-on the plugin class and mixes JetBrains and Checker Framework nullness annotations.
+`.editorconfig`: 2-space indent, UTF-8, final newline.
+
+Nullness is JSpecify, and only JSpecify - it is the one scheme Paper ships across the supported range
+(26.x dropped checker-qual, and the JetBrains annotations were never bundled). Each package carries
+`@NullMarked` in its `package-info.java`, so types are non-null by default and only genuine exceptions
+are annotated `@Nullable`. Do not reintroduce `org.jetbrains.annotations` or Checker Framework
+annotations, and when adding a field that is null before some lifecycle point, annotate it rather
+than relying on the package default being loose.

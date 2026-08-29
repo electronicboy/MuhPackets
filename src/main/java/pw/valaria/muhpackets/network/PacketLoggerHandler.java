@@ -19,7 +19,7 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
 
   private final MuhPackets muhPackets;
   private final @Nullable Connection connection;
-  private LoggingSession loggingSession;
+  private @Nullable LoggingSession loggingSession;
 
   public PacketLoggerHandler(MuhPackets muhPackets, Channel channel) {
     this.muhPackets = muhPackets;
