@@ -52,7 +52,7 @@ log rather than growing until the server dies.
 | --- | --- | --- |
 | `only-log-play` | `true` | Only log packets once the connection reaches the `PLAY` phase. |
 | `skip-move-packets` | `true` | Drop movement packets, which otherwise dominate the log. |
-| `ignored-packets` | placeholder entry | Class names to skip, e.g. `ServerboundKeepAlivePacket`. Matches either the outer name or a nested one, so `ServerboundMovePlayerPacket` also covers `ServerboundMovePlayerPacket$Pos`. |
+| `ignored-packets` | `[]` | Class names to skip, e.g. `ServerboundKeepAlivePacket`. Matches either the outer name or a nested one, so `ServerboundMovePlayerPacket` also covers `ServerboundMovePlayerPacket$Pos`. |
 | `clear-old-files-days` | `-1` | Delete logs older than N days on startup, pruning emptied directories. `-1` disables cleanup. |
 
 `/muhpackets` (permission `muhpackets.muhpackets`, default OP) reloads the config. Changes apply to
