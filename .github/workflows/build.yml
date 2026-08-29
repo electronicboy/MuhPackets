@@ -11,16 +11,20 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        java: [ 17 ]
+        # Must be at least the toolchain version in build.gradle.kts, otherwise Gradle has to
+        # provision a JDK 21 itself before it can compile anything.
+        java: [ 21 ]
       fail-fast: true
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: JDK ${{ matrix.java }}
-        uses: actions/setup-java@v3.6.0
+        uses: actions/setup-java@v6
         with:
           java-version: ${{ matrix.java }}
           distribution: 'temurin'
       - name: Setup Gradle
-        uses: gradle/gradle-build-action@v2
+        # Caches ~/.gradle/caches, which includes the paperweight-userdev artifacts. Worth having:
+        # a cold build has to decompile a Paper server before it can compile the plugin.
+        uses: gradle/actions/setup-gradle@v6
       - name: Build
         run: ./gradlew build
