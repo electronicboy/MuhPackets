@@ -28,6 +28,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 @DefaultQualifier(NonNull.class)
 public final class MuhPackets extends JavaPlugin implements Listener {
@@ -70,7 +71,9 @@ public final class MuhPackets extends JavaPlugin implements Listener {
   }
 
   private void doPoll() {
-    if (running.compareAndSet(false, true)) {
+    // Bail out if a previous flush is somehow still running. compareAndSet returns true when it
+    // *acquired* the flag, so the early return has to be on the failure case.
+    if (!running.compareAndSet(false, true)) {
       return;
     }
     try {
@@ -82,7 +85,9 @@ public final class MuhPackets extends JavaPlugin implements Listener {
           getLogger().info("Closing session: " + session.toString());
         }
       }
-    } catch (Throwable ignored) {
+    } catch (Throwable thrown) {
+      // Never let a failure here kill the repeating task, but do not hide it either.
+      getLogger().log(Level.WARNING, "Failed to flush packet logs", thrown);
     } finally {
       running.set(false);
     }
