@@ -1,5 +1,4 @@
 only-log-play: true
 skip-move-packets: true
-ignored-packets:
-  - "ignored"
+ignored-packets: []
 clear-old-files-days: -1
