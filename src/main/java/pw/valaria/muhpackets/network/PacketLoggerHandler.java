@@ -13,46 +13,12 @@ import org.jetbrains.annotations.NotNull;
 import pw.valaria.muhpackets.MuhPackets;
 import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
-import xyz.jpenilla.reflectionremapper.ReflectionRemapper;
-
-import java.lang.reflect.Field;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Set;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 public class PacketLoggerHandler extends ChannelDuplexHandler {
 
   private final MuhPackets muhPackets;
   private final Connection connection;
   private LoggingSession loggingSession;
-
-  private static Function<Connection, ConnectionProtocol> protocolSupplier;
-
-  static {
-
-    ReflectionRemapper reflectionRemapper = ReflectionRemapper.forReobfMappingsInPaperJar();
-
-    try {
-        Field protocol = Connection.class.getDeclaredField(reflectionRemapper.remapFieldName(Connection.class, "protocol"));
-        protocol.setAccessible(true); // has some perf improvements
-        protocolSupplier = (connection) -> {
-          try {
-            return (ConnectionProtocol) protocol.get(connection);
-          } catch (IllegalAccessException e) {
-            return null;
-          }
-        };
-      } catch (NoSuchFieldException e) {
-      }
-
-    if (protocolSupplier == null) {
-      protocolSupplier = (connection) -> connection.getPacketListener().protocol();
-    }
-
-
-  }
 
   public PacketLoggerHandler(MuhPackets muhPackets, Channel channel) {
     this.muhPackets = muhPackets;
@@ -95,7 +61,9 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
       return null;
     }
 
-    ConnectionProtocol protocol = protocolSupplier.apply(connection);
+    // Paper has been Mojang-mapped at runtime since 1.20.5, and Connection#protocol was removed
+    // outright; the packet listener is the supported way to ask which phase we are in.
+    final ConnectionProtocol protocol = connection.getPacketListener().protocol();
 
     if (protocol != ConnectionProtocol.PLAY && muhPackets.getMuhPacketsConfig().isLogPlayOnly()) {
       return null;

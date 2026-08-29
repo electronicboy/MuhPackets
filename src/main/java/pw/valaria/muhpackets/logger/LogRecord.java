@@ -1,6 +1,5 @@
 package pw.valaria.muhpackets.logger;
 
-import io.papermc.paper.util.ObfHelper;
 import net.minecraft.network.ConnectionProtocol;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.LastSeenMessages;
@@ -35,7 +34,7 @@ public class LogRecord {
   }
 
   public void write(Writer writer, boolean writeFields, Set<String> ignoredPackets) throws IOException {
-    final String deobf = ObfHelper.INSTANCE.deobfClassName(msg.getClass().getName()).substring(classIndex);
+    final String deobf = msg.getClass().getName().substring(classIndex);
     if (!ignoredPackets.isEmpty() && ignoredPackets.contains(deobf.substring(deobf.lastIndexOf('.') + 1))) {
       return;
     }
