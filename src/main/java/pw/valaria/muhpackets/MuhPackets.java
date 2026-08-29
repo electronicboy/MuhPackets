@@ -40,6 +40,10 @@ public final class MuhPackets extends JavaPlugin {
   Key network_key = Key.key("muhpackets", "hook");
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
   private static final int MAX_SESSION_NAME_LENGTH = 32;
+  /** How long onDisable waits, in 10ms steps, for an in-flight flush before giving up on it. */
+  private static final int FLUSH_WAIT_ATTEMPTS = 500;
+  /** How many suffixed filenames to try before giving up on opening a log. */
+  private static final int MAX_FILENAME_ATTEMPTS = 100;
   private final AtomicBoolean running = new AtomicBoolean(false);
   /** Whether handlers should still buffer records; cleared first thing on disable. */
   private volatile boolean accepting;
@@ -182,14 +186,30 @@ public final class MuhPackets extends JavaPlugin {
       this.pollTask = null;
     }
 
-    // Wait briefly for an in-flight flush so we do not write the same file from two threads.
-    for (int attempt = 0; attempt < 100 && !running.compareAndSet(false, true); attempt++) {
+    // Wait for an in-flight flush. The poll task is already cancelled, so at most one can be
+    // running and it should finish quickly.
+    boolean acquired = false;
+    for (int attempt = 0; attempt < FLUSH_WAIT_ATTEMPTS; attempt++) {
+      if (running.compareAndSet(false, true)) {
+        acquired = true;
+        break;
+      }
       try {
         Thread.sleep(10);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         break;
       }
+    }
+
+    if (!acquired) {
+      // Draining anyway would race the flush still in progress: both threads would append to the
+      // same files and both would remove from the same deques.
+      getLogger().warning("A packet log flush is still in progress after "
+        + (FLUSH_WAIT_ATTEMPTS / 100) + "s; skipping the final drain rather than writing the same "
+        + "logs from two threads. Some buffered packets may not have been written.");
+      sessions.clear();
+      return;
     }
 
     try {
@@ -211,12 +231,16 @@ public final class MuhPackets extends JavaPlugin {
     // so it is entirely attacker controlled and must never be used as a path element unfiltered.
     final String safeName = sanitiseSessionName(name);
     final File targetDir = new File(logsFolder, safeName);
-    final File target = new File(targetDir, System.currentTimeMillis() + ".log");
+    final File target;
     try {
       targetDir.mkdirs();
-      if (target.createNewFile()) {
-        writeHeader(target, name, safeName);
+      final File created = createLogFile(targetDir);
+      if (created == null) {
+        getLogger().warning("Could not find a free log filename for " + safeName);
+        return null;
       }
+      target = created;
+      writeHeader(target, name, safeName);
     } catch (IOException | SecurityException e) {
       getLogger().log(Level.WARNING, "Could not open a packet log for " + safeName, e);
       return null;
@@ -224,6 +248,24 @@ public final class MuhPackets extends JavaPlugin {
     final LoggingSession loggingSession = new LoggingSession(this, name, safeName, target);
     this.sessions.add(loggingSession);
     return loggingSession;
+  }
+
+  /**
+   * Creates a log file, suffixing the name until an unused one is found.
+   *
+   * <p>Two sessions starting in the same millisecond previously had the second silently append to
+   * the first one's file, with no header of its own. Distinct client names that sanitise to the
+   * same directory make that more reachable than the timestamp alone suggests.</p>
+   */
+  private @Nullable File createLogFile(File targetDir) throws IOException {
+    final long stamp = System.currentTimeMillis();
+    for (int attempt = 0; attempt < MAX_FILENAME_ATTEMPTS; attempt++) {
+      final File candidate = new File(targetDir, attempt == 0 ? stamp + ".log" : stamp + "-" + attempt + ".log");
+      if (candidate.createNewFile()) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   /**
