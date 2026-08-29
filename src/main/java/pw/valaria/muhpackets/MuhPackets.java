@@ -22,13 +22,15 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -81,51 +83,48 @@ public final class MuhPackets extends JavaPlugin {
     }
     final Instant cutoff = ZonedDateTime.now().minusDays(days).toInstant();
     final Path root = logsFolder.toPath();
-    int deleted = 0;
-    try (Stream<Path> walk = Files.walk(root)) {
-      final List<Path> stale = walk
-        .filter(Files::isRegularFile)
-        .filter(path -> lastModified(path).isBefore(cutoff))
-        .toList();
-      for (final Path path : stale) {
-        try {
-          Files.delete(path);
-          deleted++;
-        } catch (IOException e) {
-          getLogger().log(Level.WARNING, "Could not delete old log " + path, e);
+    final int[] deleted = {0};
+
+    // Single pass. Collecting every stale path into a list first, then walking the whole tree again
+    // to prune directories, meant holding the entire match set in memory during startup.
+    try {
+      Files.walkFileTree(root, new SimpleFileVisitor<>() {
+        @Override
+        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+          if (attrs.lastModifiedTime().toInstant().isBefore(cutoff)) {
+            try {
+              Files.delete(file);
+              deleted[0]++;
+            } catch (IOException e) {
+              getLogger().log(Level.WARNING, "Could not delete old log " + file, e);
+            }
+          }
+          return FileVisitResult.CONTINUE;
         }
-      }
+
+        @Override
+        public FileVisitResult postVisitDirectory(Path dir, @Nullable IOException exc) {
+          // Runs after the directory's entries, so anything emptied above is pruned here. Sessions
+          // whose logs have all expired otherwise leave a directory behind forever.
+          if (!dir.equals(root)) {
+            try (Stream<Path> entries = Files.list(dir)) {
+              if (entries.findAny().isEmpty()) {
+                Files.delete(dir);
+              }
+            } catch (IOException ignored) {
+              // Best effort; a directory we cannot prune is not worth failing startup over.
+            }
+          }
+          return FileVisitResult.CONTINUE;
+        }
+      });
     } catch (IOException e) {
       getLogger().log(Level.WARNING, "Could not scan " + logsFolder + " for old logs", e);
       return;
     }
 
-    // Sessions whose logs have all expired otherwise leave an empty directory behind forever.
-    try (Stream<Path> walk = Files.walk(root)) {
-      walk.sorted(Comparator.reverseOrder())
-        .filter(path -> !path.equals(root) && Files.isDirectory(path))
-        .forEach(path -> {
-          try (Stream<Path> entries = Files.list(path)) {
-            if (entries.findAny().isEmpty()) {
-              Files.delete(path);
-            }
-          } catch (IOException ignored) {
-            // Best effort; a directory we cannot prune is not worth failing startup over.
-          }
-        });
-    } catch (IOException ignored) {
-    }
-
-    if (deleted > 0) {
-      getLogger().info("Deleted " + deleted + " packet log(s) older than " + days + " day(s)");
-    }
-  }
-
-  private Instant lastModified(Path path) {
-    try {
-      return Files.getLastModifiedTime(path).toInstant();
-    } catch (IOException e) {
-      return Instant.now();
+    if (deleted[0] > 0) {
+      getLogger().info("Deleted " + deleted[0] + " packet log(s) older than " + days + " day(s)");
     }
   }
 
