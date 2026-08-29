@@ -10,15 +10,21 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 public class LoggingSession {
   private final MuhPackets muhPackets;
   private final String name;
+  private final String safeName;
   private final ConcurrentLinkedDeque<LogRecord> records = new ConcurrentLinkedDeque<>();
   private final File target;
   private boolean isActive = true;
 
-  public LoggingSession(MuhPackets muhPackets, String name, File target) {
+  public LoggingSession(MuhPackets muhPackets, String name, String safeName, File target) {
     this.muhPackets = muhPackets;
 
     this.name = name;
+    this.safeName = safeName;
     this.target = target;
+  }
+
+  public String safeName() {
+    return safeName;
   }
 
   public void log(LogRecord logRecord) {

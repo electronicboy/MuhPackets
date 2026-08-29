@@ -34,6 +34,7 @@ import java.util.logging.Level;
 public final class MuhPackets extends JavaPlugin implements Listener {
   Key network_key = Key.key("muhpackets", "hook");
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
+  private static final int MAX_SESSION_NAME_LENGTH = 32;
   private final AtomicBoolean running = new AtomicBoolean(false);
   private File logsFolder;
 
@@ -118,17 +119,40 @@ public final class MuhPackets extends JavaPlugin implements Listener {
 
   @Nullable
   public LoggingSession createLoggingSession(String name) {
-    final File targetDir = new File(logsFolder, name);
+    // 'name' arrives straight off the wire in a login hello, before the player is authenticated,
+    // so it is entirely attacker controlled and must never be used as a path element unfiltered.
+    final String safeName = sanitiseSessionName(name);
+    final File targetDir = new File(logsFolder, safeName);
     final File target = new File(targetDir, System.currentTimeMillis() + ".log");
     try {
-      target.getParentFile().mkdirs();
+      targetDir.mkdirs();
       target.createNewFile();
-    } catch (IOException e) {
-      e.printStackTrace();
+    } catch (IOException | SecurityException e) {
+      getLogger().log(Level.WARNING, "Could not open a packet log for " + safeName, e);
       return null;
     }
-    final LoggingSession loggingSession = new LoggingSession(this, name, target);
+    final LoggingSession loggingSession = new LoggingSession(this, name, safeName, target);
     this.sessions.add(loggingSession);
     return loggingSession;
+  }
+
+  /**
+   * Reduces a client-supplied name to a single, safe path segment.
+   *
+   * <p>Anything outside {@code [A-Za-z0-9_-]} is replaced, which removes both path separators and
+   * {@code .}, so {@code ..} traversal cannot survive. The result is length capped and never empty,
+   * so it can always be used as a directory name.</p>
+   */
+  static String sanitiseSessionName(@Nullable String raw) {
+    if (raw == null || raw.isEmpty()) {
+      return "unknown";
+    }
+    final StringBuilder out = new StringBuilder(Math.min(raw.length(), MAX_SESSION_NAME_LENGTH));
+    for (int i = 0; i < raw.length() && out.length() < MAX_SESSION_NAME_LENGTH; i++) {
+      final char c = raw.charAt(i);
+      out.append((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+        || c == '_' || c == '-' ? c : '_');
+    }
+    return out.isEmpty() ? "unknown" : out.toString();
   }
 }
