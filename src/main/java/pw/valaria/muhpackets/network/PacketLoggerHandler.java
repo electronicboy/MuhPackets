@@ -84,8 +84,8 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
       return null;
     }
 
-    if (msg instanceof Packet<?>) {
-      return new LogRecord(protocol, (Packet<?>) msg);
+    if (msg instanceof Packet<?> packet) {
+      return LogRecord.capture(protocol, packet, muhPackets.getMuhPacketsConfig().getIgnoredPackets());
     }
 
     return null;

@@ -1,48 +1,87 @@
 package pw.valaria.muhpackets.logger;
 
 import net.minecraft.network.ConnectionProtocol;
-import org.jetbrains.annotations.Nullable;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.LastSeenMessages;
 import net.minecraft.network.chat.MessageSignature;
 import net.minecraft.network.chat.RemoteChatSession;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.world.phys.HitResult;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.Writer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Collections;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * One captured packet, ready to be written out.
+ *
+ * <p>Field values are read when the record is created, on the netty thread that handled the packet,
+ * not later when it is written. Packets are not guaranteed to still be intact by flush time.</p>
+ */
 public class LogRecord {
   private final static String PACKET_PACKAGE = "net.minecraft.network.protocol.";
   private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
+
+  /**
+   * Reflection setup is expensive and this now runs on the netty thread, so the loggable fields of
+   * each packet class are resolved once and reused.
+   */
+  private static final ClassValue<List<Field>> LOGGABLE_FIELDS = new ClassValue<>() {
+    @Override
+    protected List<Field> computeValue(Class<?> type) {
+      final List<Field> fields = new ArrayList<>();
+      for (Class<?> clazz = type; clazz != null; clazz = clazz.getSuperclass()) {
+        for (final Field field : clazz.getDeclaredFields()) {
+          if (!shouldLogField(field)) {
+            continue;
+          }
+          try {
+            field.setAccessible(true);
+            fields.add(field);
+          } catch (Throwable ignored) {
+            // Inaccessible under the module system; nothing useful we can do with it.
+          }
+        }
+      }
+      return List.copyOf(fields);
+    }
+  };
+
   private final @Nullable ConnectionProtocol protocol;
-  private final Packet<?> msg;
+  private final String packetName;
+  private final Map<String, String> fields;
   private final LocalDateTime time = LocalDateTime.now();
 
-  public LogRecord(@Nullable ConnectionProtocol protocol, Packet<?> msg) {
-
+  private LogRecord(@Nullable ConnectionProtocol protocol, String packetName, Map<String, String> fields) {
     this.protocol = protocol;
-    this.msg = msg;
+    this.packetName = packetName;
+    this.fields = fields;
   }
 
-  public void write(Writer writer, boolean writeFields, Set<String> ignoredPackets) throws IOException {
-    final String deobf = packetName(msg.getClass());
-    if (isIgnored(deobf, ignoredPackets)) {
-      return;
+  /**
+   * Captures a packet, or returns null if it is configured to be ignored.
+   */
+  public static @Nullable LogRecord capture(@Nullable ConnectionProtocol protocol, Packet<?> msg,
+                                            Set<String> ignoredPackets) {
+    final String packetName = packetName(msg.getClass());
+    if (isIgnored(packetName, ignoredPackets)) {
+      return null;
     }
+    return new LogRecord(protocol, packetName, captureFields(msg));
+  }
 
-    final Map<String, String> fields = writeFields ? populateFieldMap() : Collections.emptyMap();
-    final String time = DEFAULT.format(this.time);
-    writer.write("[%s] [%s] [%s] %s\n".formatted(time, protocol == null ? "UNKNOWN" : protocol, deobf, fields));
+  public void write(Writer writer) throws IOException {
+    writer.write("[%s] [%s] [%s] %s\n".formatted(
+      DEFAULT.format(this.time), protocol == null ? "UNKNOWN" : protocol, packetName, fields));
   }
 
   /**
@@ -75,31 +114,20 @@ public class LogRecord {
     return nested > 0 && ignoredPackets.contains(simple.substring(0, nested));
   }
 
-  private Map<String, String> populateFieldMap() {
-    HashMap<String, String> out = new HashMap<>();
-
-    Class<?> clazz = msg.getClass();
-    while (clazz != null) {
-      for (Field declaredField : clazz.getDeclaredFields()) {
-        try {
-          declaredField.setAccessible(true);
-          if (shouldLogField(declaredField, msg)) {
-
-            out.put(declaredField.getName(), parseValue(declaredField.get(msg)));
-
-          }
-        } catch (Throwable ignored) {
-        }
+  private static Map<String, String> captureFields(Packet<?> msg) {
+    final Map<String, String> out = new LinkedHashMap<>();
+    for (final Field field : LOGGABLE_FIELDS.get(msg.getClass())) {
+      try {
+        out.put(field.getName(), parseValue(field.get(msg)));
+      } catch (Throwable ignored) {
+        // A single unreadable field should not cost us the rest of the packet.
       }
-      clazz = clazz.getSuperclass();
     }
-
     return out;
-
   }
 
-  private boolean shouldLogField(Field field, Packet<?> msg) {
-    if (Modifier.isStatic(field.getModifiers())) {
+  private static boolean shouldLogField(Field field) {
+    if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
       return false;
     }
 
@@ -111,14 +139,10 @@ public class LogRecord {
       return false;
     }
 
-    if (field.getType() == LastSeenMessages.Update.class) {
-      return false;
-    }
-
-    return true;
+    return field.getType() != LastSeenMessages.Update.class;
   }
 
-  private String parseValue(Object object) {
+  private static String parseValue(@Nullable Object object) {
     if (object == null) return "null";
 
     if (object instanceof HitResult hitResult) {

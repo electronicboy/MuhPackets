@@ -76,7 +76,7 @@ public class LoggingSession {
       // Peek, write, then remove. Popping first meant a mid-drain failure discarded every record
       // already taken off the deque, silently.
       while ((record = records.peek()) != null) {
-        record.write(writer, true, muhPackets.getMuhPacketsConfig().getIgnoredPackets());
+        record.write(writer);
         records.poll();
         buffered.decrementAndGet();
       }
