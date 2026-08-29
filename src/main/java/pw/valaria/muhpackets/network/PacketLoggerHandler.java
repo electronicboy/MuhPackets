@@ -32,6 +32,12 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
 
   @Override
   public void channelRead(@NotNull ChannelHandlerContext ctx, @NotNull Object msg) throws Exception {
+    // This handler stays in the pipeline of already-open connections after the plugin is disabled,
+    // so it has to check rather than assume the plugin is still there.
+    if (!muhPackets.isAccepting()) {
+      super.channelRead(ctx, msg);
+      return;
+    }
 
     if (msg instanceof ServerboundHelloPacket serverboundHelloPacket && loggingSession == null) {
       this.loggingSession = muhPackets.createLoggingSession(serverboundHelloPacket.name());

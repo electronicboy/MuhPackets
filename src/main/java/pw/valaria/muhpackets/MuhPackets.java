@@ -13,6 +13,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.checkerframework.framework.qual.DefaultQualifier;
 import org.jetbrains.annotations.NotNull;
@@ -36,6 +37,9 @@ public final class MuhPackets extends JavaPlugin implements Listener {
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
   private static final int MAX_SESSION_NAME_LENGTH = 32;
   private final AtomicBoolean running = new AtomicBoolean(false);
+  /** Whether handlers should still buffer records; cleared first thing on disable. */
+  private volatile boolean accepting;
+  private @Nullable BukkitTask pollTask;
   private File logsFolder;
 
   List<LoggingSession> sessions = new CopyOnWriteArrayList<>();
@@ -50,7 +54,7 @@ public final class MuhPackets extends JavaPlugin implements Listener {
         channel.pipeline().addBefore("packet_handler", "muh_logger", new PacketLoggerHandler(MuhPackets.this, channel));
       }
     });
-    Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::doPoll, 20, 20);
+    this.pollTask = Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::doPoll, 20, 20);
 
     this.reloadConfig();
 
@@ -69,6 +73,13 @@ public final class MuhPackets extends JavaPlugin implements Listener {
         });
       }
     }
+
+    this.accepting = true;
+  }
+
+  /** Whether packet handlers should keep buffering records. */
+  public boolean isAccepting() {
+    return accepting;
   }
 
   private void doPoll() {
@@ -113,8 +124,37 @@ public final class MuhPackets extends JavaPlugin implements Listener {
 
   @Override
   public void onDisable() {
+    // Stop accepting first: handlers left in live pipelines must not keep buffering into a plugin
+    // that is going away, and they outlive us because we cannot remove them from open connections.
+    this.accepting = false;
     ChannelInitializeListenerHolder.removeListener(network_key);
-    this.running.set(false);
+    if (this.pollTask != null) {
+      this.pollTask.cancel();
+      this.pollTask = null;
+    }
+
+    // Wait briefly for an in-flight flush so we do not write the same file from two threads.
+    for (int attempt = 0; attempt < 100 && !running.compareAndSet(false, true); attempt++) {
+      try {
+        Thread.sleep(10);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    try {
+      // Anything still buffered is only in memory; without this final drain it is simply lost.
+      for (final LoggingSession session : sessions) {
+        session.close();
+        session.process();
+      }
+    } catch (Throwable thrown) {
+      getLogger().log(Level.WARNING, "Failed to flush packet logs on shutdown", thrown);
+    } finally {
+      sessions.clear();
+      running.set(false);
+    }
   }
 
   @Nullable
