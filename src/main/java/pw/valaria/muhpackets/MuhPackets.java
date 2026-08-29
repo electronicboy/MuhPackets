@@ -48,13 +48,11 @@ public final class MuhPackets extends JavaPlugin {
   /** Whether handlers should still buffer records; cleared first thing on disable. */
   private volatile boolean accepting;
   private @Nullable BukkitTask pollTask;
-  private File logsFolder;
 
   List<LoggingSession> sessions = new CopyOnWriteArrayList<>();
 
   @Override
   public void onEnable() {
-    logsFolder = new File(getDataFolder(), "logs/");
     saveDefaultConfig();
     io.papermc.paper.network.ChannelInitializeListenerHolder.addListener(network_key, new ChannelInitializeListener() {
       @Override
@@ -77,6 +75,7 @@ public final class MuhPackets extends JavaPlugin {
    * @param days retention in days; zero or negative disables cleanup
    */
   private void clearOldLogs(int days) {
+    final File logsFolder = logsFolder();
     if (days <= 0 || !logsFolder.isDirectory()) {
       return;
     }
@@ -128,6 +127,17 @@ public final class MuhPackets extends JavaPlugin {
     } catch (IOException e) {
       return Instant.now();
     }
+  }
+
+  /**
+   * Where session logs live.
+   *
+   * <p>Derived on demand rather than cached in a field: a {@link File} is just a path wrapper, and a
+   * field would be null until onEnable ran, which is a lifecycle hole the package's null-marking
+   * would otherwise have to lie about.</p>
+   */
+  private File logsFolder() {
+    return new File(getDataFolder(), "logs/");
   }
 
   /** Whether packet handlers should keep buffering records. */
@@ -230,7 +240,7 @@ public final class MuhPackets extends JavaPlugin {
     // 'name' arrives straight off the wire in a login hello, before the player is authenticated,
     // so it is entirely attacker controlled and must never be used as a path element unfiltered.
     final String safeName = sanitiseSessionName(name);
-    final File targetDir = new File(logsFolder, safeName);
+    final File targetDir = new File(logsFolder(), safeName);
     final File target;
     try {
       targetDir.mkdirs();
