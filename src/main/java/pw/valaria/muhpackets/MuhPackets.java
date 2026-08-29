@@ -11,10 +11,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
-import org.checkerframework.checker.nullness.qual.NonNull;
-import org.checkerframework.framework.qual.DefaultQualifier;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
+import org.jspecify.annotations.Nullable;
 import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
 import pw.valaria.muhpackets.network.PacketLoggerHandler;
@@ -39,7 +36,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
-@DefaultQualifier(NonNull.class)
 public final class MuhPackets extends JavaPlugin {
   Key network_key = Key.key("muhpackets", "hook");
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
@@ -58,7 +54,7 @@ public final class MuhPackets extends JavaPlugin {
     saveDefaultConfig();
     io.papermc.paper.network.ChannelInitializeListenerHolder.addListener(network_key, new ChannelInitializeListener() {
       @Override
-      public void afterInitChannel(@NonNull Channel channel) {
+      public void afterInitChannel(Channel channel) {
         channel.pipeline().addBefore("packet_handler", "muh_logger", new PacketLoggerHandler(MuhPackets.this, channel));
       }
     });
@@ -163,7 +159,7 @@ public final class MuhPackets extends JavaPlugin {
   }
 
   @Override
-  public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
+  public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
     reloadConfig();
     sender.sendMessage(Component.text("Reloaded config!", NamedTextColor.GREEN));
     return true;
@@ -210,8 +206,7 @@ public final class MuhPackets extends JavaPlugin {
     }
   }
 
-  @Nullable
-  public LoggingSession createLoggingSession(String name) {
+  public @Nullable LoggingSession createLoggingSession(String name) {
     // 'name' arrives straight off the wire in a login hello, before the player is authenticated,
     // so it is entirely attacker controlled and must never be used as a path element unfiltered.
     final String safeName = sanitiseSessionName(name);

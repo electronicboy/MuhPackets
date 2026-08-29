@@ -10,8 +10,7 @@ import net.minecraft.network.PacketListener;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.login.ServerboundHelloPacket;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
+import org.jspecify.annotations.Nullable;
 import pw.valaria.muhpackets.MuhPackets;
 import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
@@ -38,7 +37,7 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
   }
 
   @Override
-  public void channelRead(@NotNull ChannelHandlerContext ctx, @NotNull Object msg) throws Exception {
+  public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
     // This handler stays in the pipeline of already-open connections after the plugin is disabled,
     // so it has to check rather than assume the plugin is still there.
     if (!muhPackets.isAccepting()) {
@@ -68,7 +67,7 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
     super.channelUnregistered(ctx);
   }
 
-  private LogRecord createRecord(Object msg) {
+  private @Nullable LogRecord createRecord(Object msg) {
 
     if (msg instanceof ServerboundMovePlayerPacket && muhPackets.getMuhPacketsConfig().isSkipMovePackets()) {
       return null;
