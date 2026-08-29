@@ -22,7 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 public class LogRecord {
-  private final static int classIndex = "net.minecraft.network.protocol.".length();
+  private final static String PACKET_PACKAGE = "net.minecraft.network.protocol.";
   private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
   private final @Nullable ConnectionProtocol protocol;
   private final Packet<?> msg;
@@ -35,14 +35,44 @@ public class LogRecord {
   }
 
   public void write(Writer writer, boolean writeFields, Set<String> ignoredPackets) throws IOException {
-    final String deobf = msg.getClass().getName().substring(classIndex);
-    if (!ignoredPackets.isEmpty() && ignoredPackets.contains(deobf.substring(deobf.lastIndexOf('.') + 1))) {
+    final String deobf = packetName(msg.getClass());
+    if (isIgnored(deobf, ignoredPackets)) {
       return;
     }
 
     final Map<String, String> fields = writeFields ? populateFieldMap() : Collections.emptyMap();
     final String time = DEFAULT.format(this.time);
     writer.write("[%s] [%s] [%s] %s\n".formatted(time, protocol == null ? "UNKNOWN" : protocol, deobf, fields));
+  }
+
+  /**
+   * Shortens a packet class name for display, trimming the common protocol package when present.
+   *
+   * <p>Blindly cutting a fixed prefix length assumed every packet lives under that package; Paper's
+   * own packet types and anything else outside it produced a mangled name or an exception.</p>
+   */
+  static String packetName(Class<?> type) {
+    final String name = type.getName();
+    return name.startsWith(PACKET_PACKAGE) ? name.substring(PACKET_PACKAGE.length()) : name;
+  }
+
+  /**
+   * Matches against the trailing class name, with and without any nested-class suffix, so both
+   * {@code ServerboundMovePlayerPacket} and {@code ServerboundMovePlayerPacket$Pos} work.
+   */
+  static boolean isIgnored(String packetName, Set<String> ignoredPackets) {
+    if (ignoredPackets.isEmpty()) {
+      return false;
+    }
+    if (ignoredPackets.contains(packetName)) {
+      return true;
+    }
+    final String simple = packetName.substring(packetName.lastIndexOf('.') + 1);
+    if (ignoredPackets.contains(simple)) {
+      return true;
+    }
+    final int nested = simple.indexOf('$');
+    return nested > 0 && ignoredPackets.contains(simple.substring(0, nested));
   }
 
   private Map<String, String> populateFieldMap() {
