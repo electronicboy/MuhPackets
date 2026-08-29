@@ -9,7 +9,6 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.checkerframework.checker.nullness.qual.NonNull;
@@ -41,7 +40,7 @@ import java.util.logging.Level;
 import java.util.stream.Stream;
 
 @DefaultQualifier(NonNull.class)
-public final class MuhPackets extends JavaPlugin implements Listener {
+public final class MuhPackets extends JavaPlugin {
   Key network_key = Key.key("muhpackets", "hook");
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
   private static final int MAX_SESSION_NAME_LENGTH = 32;
