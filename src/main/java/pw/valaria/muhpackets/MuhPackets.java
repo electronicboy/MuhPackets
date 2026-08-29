@@ -16,15 +16,22 @@ import org.checkerframework.checker.nullness.qual.NonNull;
 import org.checkerframework.framework.qual.DefaultQualifier;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
 import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
+import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
@@ -213,7 +220,9 @@ public final class MuhPackets extends JavaPlugin implements Listener {
     final File target = new File(targetDir, System.currentTimeMillis() + ".log");
     try {
       targetDir.mkdirs();
-      target.createNewFile();
+      if (target.createNewFile()) {
+        writeHeader(target, name, safeName);
+      }
     } catch (IOException | SecurityException e) {
       getLogger().log(Level.WARNING, "Could not open a packet log for " + safeName, e);
       return null;
@@ -221,6 +230,23 @@ public final class MuhPackets extends JavaPlugin implements Listener {
     final LoggingSession loggingSession = new LoggingSession(this, name, safeName, target);
     this.sessions.add(loggingSession);
     return loggingSession;
+  }
+
+  /**
+   * Writes a two-line preamble describing the file, so a log is interpretable on its own without
+   * having to consult the source or the README.
+   */
+  private void writeHeader(File target, String rawName, String safeName) {
+    try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
+      // The raw name is client supplied, so it goes through the same escaping as any logged value;
+      // otherwise a crafted name could forge extra log lines.
+      writer.write("# muhpackets v1 player=" + LogRecord.escaped(rawName)
+        + " dir=" + safeName
+        + " started=" + DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(LocalDateTime.now()) + "\n");
+      writer.write("# format: [timestamp] [protocol] [packet] key=value ...\n");
+    } catch (IOException e) {
+      getLogger().log(Level.WARNING, "Could not write log header to " + target, e);
+    }
   }
 
   /**

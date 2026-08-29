@@ -29,7 +29,15 @@ import java.util.Set;
  */
 public class LogRecord {
   private final static String PACKET_PACKAGE = "net.minecraft.network.protocol.";
+  /**
+   * Fixed-width timestamp. ISO_LOCAL_DATE_TIME omits trailing zeros in the fractional second, so
+   * the column width varied line to line, which is awkward to read and to parse.
+   */
+  private final static DateTimeFormatter TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS");
   private final static DateTimeFormatter DEFAULT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
+
+  /** Values longer than this are cut, so one oversized field cannot produce a megabyte line. */
+  private final static int MAX_VALUE_LENGTH = 512;
 
   /**
    * Reflection setup is expensive and this now runs on the netty thread, so the loggable fields of
@@ -79,9 +87,74 @@ public class LogRecord {
     return new LogRecord(protocol, packetName, captureFields(msg));
   }
 
+  /**
+   * Writes exactly one line:
+   * {@code [timestamp] [protocol] [packet] key=value key=value}
+   *
+   * <p>The bracketed prefix is fixed width and easy to scan or split on; the payload is
+   * space-separated {@code key=value} pairs rather than a Java map dump, so values containing
+   * commas or braces are not ambiguous. Values are escaped and quoted as needed, which guarantees
+   * one record never spans more than one line.</p>
+   */
   public void write(Writer writer) throws IOException {
-    writer.write("[%s] [%s] [%s] %s\n".formatted(
-      DEFAULT.format(this.time), protocol == null ? "UNKNOWN" : protocol, packetName, fields));
+    final StringBuilder line = new StringBuilder(128);
+    line.append('[').append(TIMESTAMP.format(this.time))
+      .append("] [").append(protocol == null ? "UNKNOWN" : protocol.name())
+      .append("] [").append(packetName).append(']');
+    for (final Map.Entry<String, String> field : fields.entrySet()) {
+      line.append(' ').append(field.getKey()).append('=');
+      appendValue(line, field.getValue());
+    }
+    writer.write(line.append('\n').toString());
+  }
+
+  /**
+   * Appends a value, quoting it when it would otherwise break the space-separated layout.
+   */
+  static void appendValue(StringBuilder out, String value) {
+    final boolean quote = value.isEmpty() || needsQuoting(value);
+    if (quote) {
+      out.append('"');
+    }
+    for (int i = 0; i < value.length(); i++) {
+      final char c = value.charAt(i);
+      switch (c) {
+        case '\\' -> out.append("\\\\");
+        case '\n' -> out.append("\\n");
+        case '\r' -> out.append("\\r");
+        case '\t' -> out.append("\\t");
+        case '"' -> out.append(quote ? "\\\"" : "\"");
+        default -> {
+          if (c < 0x20 || c == 0x7f) {
+            out.append("\\u%04x".formatted((int) c));
+          } else {
+            out.append(c);
+          }
+        }
+      }
+    }
+    if (quote) {
+      out.append('"');
+    }
+  }
+
+  private static boolean needsQuoting(String value) {
+    for (int i = 0; i < value.length(); i++) {
+      final char c = value.charAt(i);
+      if (c == ' ' || c == '"' || c == '\\' || c < 0x20 || c == 0x7f) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Escapes a string for use in a log header, where the same one-line guarantee applies.
+   */
+  public static String escaped(String value) {
+    final StringBuilder out = new StringBuilder(value.length() + 2);
+    appendValue(out, value);
+    return out.toString();
   }
 
   /**
@@ -150,6 +223,13 @@ public class LogRecord {
     } else if (object instanceof RemoteChatSession.Data data) {
       return "%s{expiresAt=%s}".formatted("RemoteChatSession.Data", DEFAULT.format(data.profilePublicKey().expiresAt()));
     }
-    return object.toString();
+    return truncate(object.toString());
+  }
+
+  private static String truncate(String value) {
+    if (value.length() <= MAX_VALUE_LENGTH) {
+      return value;
+    }
+    return value.substring(0, MAX_VALUE_LENGTH) + "...(+" + (value.length() - MAX_VALUE_LENGTH) + " chars)";
   }
 }
