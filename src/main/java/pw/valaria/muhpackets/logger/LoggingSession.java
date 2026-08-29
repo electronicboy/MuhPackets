@@ -23,6 +23,9 @@ public class LoggingSession {
    */
   private static final int MAX_BUFFERED_RECORDS = 100_000;
 
+  /** How many consecutive failed flushes a closed session tolerates before its records are dropped. */
+  private static final int MAX_DRAIN_FAILURES = 10;
+
   private final MuhPackets muhPackets;
   private final String name;
   private final String safeName;
@@ -32,6 +35,7 @@ public class LoggingSession {
   private final File target;
   private volatile boolean isActive = true;
   private boolean writeFailureReported;
+  private int drainFailures;
 
   public LoggingSession(MuhPackets muhPackets, String name, String safeName, File target) {
     this.muhPackets = muhPackets;
@@ -69,26 +73,61 @@ public class LoggingSession {
   public boolean process() {
     if (records.isEmpty()) {
       reportDropped();
-      return this.isActive;
+      return stillNeeded();
     }
-    try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
-      LogRecord record;
-      // Peek, write, then remove. Popping first meant a mid-drain failure discarded every record
-      // already taken off the deque, silently.
-      while ((record = records.peek()) != null) {
-        record.write(writer);
+
+    int written = 0;
+    try {
+      try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
+        // Weakly consistent iterator, head first. Only this thread removes, and others only append,
+        // so the first 'written' entries are exactly the ones handed to the writer.
+        for (final LogRecord record : records) {
+          record.write(writer);
+          written++;
+        }
+      }
+      // Reached only once the writer has closed, and therefore flushed, cleanly. Removing before
+      // this point meant a failure in that final flush discarded records that were never written.
+      for (int i = 0; i < written; i++) {
         records.poll();
         buffered.decrementAndGet();
       }
       writeFailureReported = false;
+      drainFailures = 0;
     } catch (IOException e) {
+      drainFailures++;
       if (!writeFailureReported) {
         writeFailureReported = true;
         muhPackets.getLogger().log(Level.WARNING, "Could not write packet log " + target, e);
       }
     }
     reportDropped();
-    return this.isActive;
+    return stillNeeded();
+  }
+
+  /**
+   * Whether the session must be kept around.
+   *
+   * <p>A closed session still holding records is retained so the next flush can retry it; reporting
+   * it as finished would have the poll loop drop it, discarding exactly the records the retry logic
+   * was added to preserve. A file that simply cannot be written would keep it alive forever, so
+   * after repeated failures the remainder is discarded loudly.</p>
+   */
+  private boolean stillNeeded() {
+    if (this.isActive) {
+      return true;
+    }
+    if (records.isEmpty()) {
+      return false;
+    }
+    if (drainFailures >= MAX_DRAIN_FAILURES) {
+      muhPackets.getLogger().warning("Giving up on " + buffered.get() + " unwritten packet(s) for "
+        + safeName + " after " + drainFailures + " failed attempts to write " + target);
+      records.clear();
+      buffered.set(0);
+      return false;
+    }
+    return true;
   }
 
   private void reportDropped() {
