@@ -257,7 +257,7 @@ public final class MuhPackets extends JavaPlugin {
    * the first one's file, with no header of its own. Distinct client names that sanitise to the
    * same directory make that more reachable than the timestamp alone suggests.</p>
    */
-  private @Nullable File createLogFile(File targetDir) throws IOException {
+  static @Nullable File createLogFile(File targetDir) throws IOException {
     final long stamp = System.currentTimeMillis();
     for (int attempt = 0; attempt < MAX_FILENAME_ATTEMPTS; attempt++) {
       final File candidate = new File(targetDir, attempt == 0 ? stamp + ".log" : stamp + "-" + attempt + ".log");
