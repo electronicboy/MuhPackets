@@ -22,19 +22,56 @@ import java.util.logging.Logger;
  * through it the plugin's classloader, for as long as that connection stays open - so every reload
  * would leak an entire plugin generation.</p>
  *
- * <p>Registration is also the shutdown interlock. Channels are initialised on netty threads while
- * {@link #shutdown} runs on the main thread, so a connection accepted mid-sweep can register after
- * the sweep has passed it. Such a handler would be in a live pipeline and in nobody's records -
- * precisely the leak above, arrived at from the other direction - so once shut down the registry
- * refuses registrations and the caller is expected to remove itself.</p>
+ * <p>This also holds the plugin's one shutdown signal, and it lives here rather than on the plugin
+ * for a specific reason: admitting a handler has to be indivisible from the shutdown sweep.
+ * Channels are initialised on netty threads while {@link #shutdown} runs on the main thread, so a
+ * connection accepted mid-sweep can otherwise register after the sweep has passed it, leaving a
+ * handler in a live pipeline and in nobody's records - precisely the leak above, arrived at from
+ * the other direction. A flag anywhere else is read outside this monitor and reopens that window,
+ * which is what a second, separate "accepting" flag on the plugin used to do.</p>
+ *
+ * <p>One field, three states, so the ordering is in the type rather than in the order some
+ * statements happen to appear in: nothing is admitted before {@link #open} or after
+ * {@link #shutdown}, and shutdown is terminal.</p>
  *
  * <p>Guarded by a monitor rather than a concurrent set and a flag: the alternative needs a
  * double-checked add to close that window, and the untestable interleaving it leaves behind is a
  * poor trade for a lock taken once per connection, which is nothing beside accepting the socket.</p>
  */
 public final class HandlerRegistry {
+  /** Lifecycle of the plugin's network side, and the only shutdown signal there is. */
+  private enum State {
+    /** Enabling: the plugin is not ready to take connections yet. */
+    NEW,
+    /** Enabled and taking connections. */
+    OPEN,
+    /** Disabled. Terminal - a reload gets a new plugin instance and a new registry. */
+    CLOSED
+  }
+
   private final Set<ChannelHandlerContext> contexts = new HashSet<>();
-  private boolean closed;
+  /**
+   * Volatile so the packet path can read it without contending for the monitor. Registration and
+   * shutdown read it under the monitor instead, which is what makes those two indivisible.
+   */
+  private volatile State state = State.NEW;
+
+  /**
+   * Whether the plugin is up and work should still be accepted.
+   *
+   * <p>The cheap read, for the packet path. Registration must not use this: checking here and
+   * acting afterwards is exactly the race the monitor exists to prevent.</p>
+   */
+  public boolean isAccepting() {
+    return state == State.OPEN;
+  }
+
+  /** Opens the gate once the plugin has finished enabling. */
+  public synchronized void open() {
+    if (state == State.NEW) {
+      state = State.OPEN;
+    }
+  }
 
   /**
    * Records a handler that has just been installed.
@@ -43,7 +80,7 @@ public final class HandlerRegistry {
    *         remove itself from the pipeline, because nothing else is going to
    */
   public synchronized boolean register(ChannelHandlerContext ctx) {
-    if (closed) {
+    if (state != State.OPEN) {
       return false;
     }
     contexts.add(ctx);
@@ -66,7 +103,8 @@ public final class HandlerRegistry {
    */
   public synchronized int shutdown(Logger logger) {
     // Set before the sweep, so anything arriving while it runs is refused rather than missed.
-    closed = true;
+    // Moving this below the loop reopens the window this class exists to close.
+    state = State.CLOSED;
     int removed = 0;
     // Snapshot: removing a handler triggers handlerRemoved, which unregisters it from this very
     // set. The monitor is reentrant, so that nested unregister is fine, but iterating live is not.

@@ -34,18 +34,25 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
 - `MuhPackets` (JavaPlugin) registers a Paper `ChannelInitializeListener` that inserts a
   `PacketLoggerHandler` before the `packet_handler` in every connection's pipeline. It also owns the
   list of `LoggingSession`s and an async repeating task (`doPoll`, every 20 ticks) that flushes them.
-  `onDisable` clears `accepting`, removes every handler it installed (see `HandlerRegistry`), then
-  drains every session. Handlers still consult `isAccepting()`, because a packet can be in flight
-  while that is happening and removal can fail on an unhealthy channel.
+  Enable and disable are deliberate mirrors. `onEnable` loads config, prunes, starts the poll task,
+  opens the gate, and registers the channel listener **last** - so nothing can arrive before what it
+  depends on exists. `onDisable` removes the listener, then `HandlerRegistry#shutdown` (which closes
+  the gate and sweeps handlers under one lock), then drains every session. Handlers still consult
+  `isAccepting()`, because a packet can be in flight while that happens and removal can fail on an
+  unhealthy channel.
 - `SessionRateLimiter` bounds how fast sessions may be opened, which is the axis a login flood
   actually moves along - a session lasts as long as its connection, so capping how many exist at
   once caps concurrent players instead. Token bucket, so a restart's reconnect storm still gets
   logged while a sustained flood does not. `max-sessions` survives as an off-by-default ceiling.
 - `HandlerRegistry` records the `ChannelHandlerContext` of each installed handler, captured in
   `handlerAdded` and dropped in `handlerRemoved` (which netty also fires when a channel closes).
-  `register` doubles as the shutdown interlock: channels initialise on netty threads while
-  `shutdown` runs on the main thread, so a connection accepted mid-sweep would otherwise install a
-  handler the sweep has already passed. Once shut down it refuses, and the handler removes itself.
+  It also holds the plugin's **only** shutdown signal, as one `NEW -> OPEN -> CLOSED` field.
+  That lives here rather than on the plugin because admitting a handler has to be indivisible from
+  the sweep: channels initialise on netty threads while `shutdown` runs on the main thread, so a
+  connection accepted mid-sweep would otherwise install a handler the sweep has already passed. A
+  flag anywhere else is read outside this monitor and reopens that window - which is what the
+  plugin's separate `accepting` field used to do. `isAccepting()` is the cheap volatile read for
+  the packet path; registration must not use it. Refused handlers remove themselves.
   Paper offers no way to enumerate open connections, so this self-kept list is the only handle on
   them. It exists because a handler left in a live pipeline holds a strong reference to the plugin
   instance, and through it the plugin classloader, so without removal every reload leaks a plugin

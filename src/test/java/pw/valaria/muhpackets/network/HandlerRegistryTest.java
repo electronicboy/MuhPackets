@@ -46,6 +46,12 @@ class HandlerRegistryTest {
     }
   }
 
+  private HandlerRegistry openRegistry() {
+    final HandlerRegistry registry = new HandlerRegistry();
+    registry.open();
+    return registry;
+  }
+
   private EmbeddedChannel channelWith(HandlerRegistry registry) {
     final EmbeddedChannel channel = new EmbeddedChannel();
     channel.pipeline().addLast("muh_logger", new TrackedHandler(registry));
@@ -54,7 +60,7 @@ class HandlerRegistryTest {
 
   @Test
   void tracksHandlersAsTheyAreInstalled() {
-    final HandlerRegistry registry = new HandlerRegistry();
+    final HandlerRegistry registry = openRegistry();
 
     channelWith(registry);
     channelWith(registry);
@@ -64,7 +70,7 @@ class HandlerRegistryTest {
 
   @Test
   void removesHandlersFromEveryTrackedPipeline() {
-    final HandlerRegistry registry = new HandlerRegistry();
+    final HandlerRegistry registry = openRegistry();
     final EmbeddedChannel one = channelWith(registry);
     final EmbeddedChannel two = channelWith(registry);
     assertNotNull(one.pipeline().get("muh_logger"));
@@ -80,7 +86,7 @@ class HandlerRegistryTest {
   void closingAChannelStopsItBeingTracked() {
     // Otherwise the registry grows for the lifetime of the server, holding a context per
     // connection that has long since gone away.
-    final HandlerRegistry registry = new HandlerRegistry();
+    final HandlerRegistry registry = openRegistry();
     final EmbeddedChannel channel = channelWith(registry);
     assertEquals(1, registry.tracked());
 
@@ -91,7 +97,7 @@ class HandlerRegistryTest {
 
   @Test
   void handlerAlreadyRemovedIsNotAnError() {
-    final HandlerRegistry registry = new HandlerRegistry();
+    final HandlerRegistry registry = openRegistry();
     final EmbeddedChannel channel = channelWith(registry);
     // Re-register the context after removing it by hand, so removeAll meets one that has gone.
     final ChannelHandlerContext ctx = channel.pipeline().context("muh_logger");
@@ -108,7 +114,7 @@ class HandlerRegistryTest {
     // A connection accepted while onDisable is sweeping would otherwise install a handler that
     // nothing will ever remove - holding the dead plugin's classloader open for the life of that
     // connection, which is the leak this class exists to prevent.
-    final HandlerRegistry registry = new HandlerRegistry();
+    final HandlerRegistry registry = openRegistry();
     registry.shutdown(logger);
 
     final EmbeddedChannel late = channelWith(registry);
@@ -119,7 +125,7 @@ class HandlerRegistryTest {
 
   @Test
   void refusedRegistrationIsNotTracked() {
-    final HandlerRegistry registry = new HandlerRegistry();
+    final HandlerRegistry registry = openRegistry();
     registry.shutdown(logger);
 
     channelWith(registry);
@@ -129,8 +135,69 @@ class HandlerRegistryTest {
   }
 
   @Test
-  void shutdownIsSafeToCallTwice() {
+  void nothingIsAdmittedBeforeTheGateOpens() {
+    // The listener goes on last during enable, but the ordering guarantee should not rest on that
+    // alone: a handler installed before the plugin finished enabling has nothing behind it yet.
     final HandlerRegistry registry = new HandlerRegistry();
+
+    final EmbeddedChannel early = channelWith(registry);
+
+    assertNull(early.pipeline().get("muh_logger"));
+    assertEquals(0, registry.tracked());
+  }
+
+  @Test
+  void shutdownIsTerminal() {
+    // A reload builds a new plugin and a new registry, so reopening this one would only ever mean
+    // handlers registering into a plugin that is already gone.
+    final HandlerRegistry registry = openRegistry();
+    registry.shutdown(logger);
+
+    registry.open();
+
+    assertEquals(0, registry.tracked());
+    channelWith(registry);
+    assertEquals(0, registry.tracked(), "open() must not resurrect a shut-down registry");
+  }
+
+  @Test
+  void aRegistrationRacingTheSweepIsRefused() {
+    // The ordering guarantee itself: the signal is cleared BEFORE the sweep, so a connection
+    // arriving while it runs is refused rather than slipping in behind it. Driven reentrantly from
+    // inside handlerRemoved, which is precisely "mid-sweep". Move the state change below the loop
+    // and this fails.
+    final HandlerRegistry registry = openRegistry();
+    final EmbeddedChannel[] latecomer = new EmbeddedChannel[1];
+    final EmbeddedChannel sweeping = new EmbeddedChannel();
+    sweeping.pipeline().addLast("muh_logger", new ChannelInboundHandlerAdapter() {
+      @Override
+      public void handlerAdded(ChannelHandlerContext ctx) {
+        if (!registry.register(ctx)) {
+          ctx.pipeline().remove(this);
+        }
+      }
+
+      @Override
+      public void handlerRemoved(ChannelHandlerContext ctx) {
+        registry.unregister(ctx);
+        if (latecomer[0] == null) {
+          // A connection arriving while the sweep is still running.
+          latecomer[0] = channelWith(registry);
+        }
+      }
+    });
+
+    registry.shutdown(logger);
+
+    assertNotNull(latecomer[0], "the sweep should have admitted the attempt");
+    assertNull(latecomer[0].pipeline().get("muh_logger"),
+      "a handler registered mid-sweep would never be removed by anything");
+    assertEquals(0, registry.tracked());
+  }
+
+  @Test
+  void shutdownIsSafeToCallTwice() {
+    final HandlerRegistry registry = openRegistry();
     channelWith(registry);
 
     assertEquals(1, registry.shutdown(logger));

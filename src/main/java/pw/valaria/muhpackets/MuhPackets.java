@@ -51,15 +51,28 @@ public final class MuhPackets extends JavaPlugin {
   private final HandlerRegistry handlers = new HandlerRegistry();
   /** Naming, opening and expiry of the files themselves. */
   private final LogDirectory logs = new LogDirectory(this::logsFolder, this::getLogger);
-  /** Whether handlers should still buffer records; cleared first thing on disable. */
-  private volatile boolean accepting;
   private @Nullable BukkitTask pollTask;
 
   List<LoggingSession> sessions = new CopyOnWriteArrayList<>();
 
   @Override
   public void onEnable() {
+    // Startup is the mirror of shutdown, and the order is the point: everything a connection
+    // depends on is in place before any connection can arrive. The listener used to go on first,
+    // which left a window where handlers were installed into a plugin still reading its config.
     saveDefaultConfig();
+    this.reloadConfig();
+
+    final int deleted = logs.prune(this.getMuhPacketsConfig().getClearOldFilesDays());
+    if (deleted > 0) {
+      getLogger().info("Deleted " + deleted + " packet log(s) older than "
+        + this.getMuhPacketsConfig().getClearOldFilesDays() + " day(s)");
+    }
+
+    this.pollTask = Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::doPoll, 20, 20);
+    this.handlers.open();
+
+    // Last: from here connections can arrive at any moment, on threads that are not this one.
     // A previous generation of this plugin may still be registered if a reload left one behind;
     // addListener would otherwise stack a second listener under the same key.
     if (ChannelInitializeListenerHolder.hasListener(network_key)) {
@@ -71,17 +84,6 @@ public final class MuhPackets extends JavaPlugin {
         channel.pipeline().addBefore("packet_handler", "muh_logger", new PacketLoggerHandler(MuhPackets.this, channel));
       }
     });
-    this.pollTask = Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::doPoll, 20, 20);
-
-    this.reloadConfig();
-
-    final int deleted = logs.prune(this.getMuhPacketsConfig().getClearOldFilesDays());
-    if (deleted > 0) {
-      getLogger().info("Deleted " + deleted + " packet log(s) older than "
-        + this.getMuhPacketsConfig().getClearOldFilesDays() + " day(s)");
-    }
-
-    this.accepting = true;
   }
 
   /**
@@ -100,9 +102,15 @@ public final class MuhPackets extends JavaPlugin {
     return handlers;
   }
 
-  /** Whether packet handlers should keep buffering records. */
+  /**
+   * Whether packet handlers should keep buffering records.
+   *
+   * <p>Delegated rather than duplicated. The plugin used to keep its own flag alongside the
+   * registry's, and the gap between the two is where a connection accepted mid-shutdown could slip
+   * a handler back into a live pipeline.</p>
+   */
   public boolean isAccepting() {
-    return accepting;
+    return handlers.isAccepting();
   }
 
   private void doPoll() {
@@ -173,14 +181,15 @@ public final class MuhPackets extends JavaPlugin {
 
   @Override
   public void onDisable() {
-    // Stop accepting before anything else, so no handler can buffer into a plugin that is going
-    // away while the rest of this runs.
-    this.accepting = false;
+    // Shutdown in three ordered steps, and the order is load-bearing.
+    // 1. Stop new connections reaching us at all.
     ChannelInitializeListenerHolder.removeListener(network_key);
 
-    // Take our handlers back out of the pipelines they are still sitting in. Each one holds a
-    // reference to this plugin instance, and through it this plugin's classloader, so leaving them
-    // behind leaks a whole plugin generation per open connection every time the server reloads.
+    // 2. Close the gate and take our handlers back out of the pipelines they are still sitting in.
+    // Both happen under one lock, so a connection accepted while it runs is refused rather than
+    // slipping in behind the sweep. Each handler holds a reference to this plugin instance, and
+    // through it this plugin's classloader, so leaving one behind leaks a whole plugin generation
+    // per open connection every time the server reloads.
     final int removed = handlers.shutdown(getLogger());
     if (removed > 0) {
       getLogger().info("Removed the packet logger from " + removed + " open connection(s)");
@@ -232,6 +241,12 @@ public final class MuhPackets extends JavaPlugin {
   }
 
   public @Nullable LoggingSession createLoggingSession(String name) {
+    // The same signal the handler path uses. A packet already in flight can reach here after
+    // shutdown started, and opening a log for it would create a session nothing will ever drain.
+    if (!isAccepting()) {
+      return null;
+    }
+
     // Both checks come before anything touches the disk. Opening a session costs a mkdirs, a
     // createNewFile and a header write on the netty thread, so under a login flood the refusal has
     // to happen before that work, not after it.
