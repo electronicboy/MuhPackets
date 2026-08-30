@@ -102,6 +102,55 @@ class LoggingSessionTest {
   }
 
   @Test
+  void recordsWhatWasDroppedInTheLogFile() throws IOException {
+    final File target = dir.resolve("out.log").toFile();
+    final LoggingSession session = session(target, 2);
+
+    for (int i = 0; i < 5; i++) {
+      session.log(record("P" + i));
+    }
+    session.process();
+
+    final List<String> lines = lines(target);
+    assertEquals("# dropped 3 record(s) before this point: buffer limit reached", lines.get(0),
+      "a log has to say what is missing from it; the console may be long gone");
+    assertEquals(3, lines.size(), "marker plus the two records that fit");
+  }
+
+  @Test
+  void noMarkerWhenNothingWasDropped() throws IOException {
+    final File target = dir.resolve("out.log").toFile();
+    final LoggingSession session = session(target, 10);
+
+    session.log(record("A"));
+    session.process();
+
+    assertTrue(lines(target).stream().noneMatch(line -> line.startsWith("# dropped")));
+  }
+
+  @Test
+  void aFailedWriteStillOwesTheDropCount() throws IOException {
+    // A directory cannot be opened as a file, which is the cheapest real IOException available.
+    final File target = dir.resolve("unwritable").toFile();
+    assertTrue(target.mkdir());
+    final LoggingSession session = session(target, 1);
+
+    session.log(record("A"));
+    session.log(record("B"));
+    session.log(record("C"));
+    assertTrue(session.process(), "an open session survives a failed write");
+
+    // The count must not have been consumed by a write that never happened: once the file becomes
+    // writable the marker still has to appear, or the gap is silent.
+    assertTrue(target.delete());
+    assertTrue(session.process());
+
+    final List<String> lines = lines(dir.resolve("unwritable").toFile());
+    assertEquals("# dropped 2 record(s) before this point: buffer limit reached", lines.get(0));
+    assertEquals(2, lines.size(), "marker plus the record that was held back");
+  }
+
+  @Test
   void closedAndDrainedSessionReportsItselfFinished() {
     final File target = dir.resolve("out.log").toFile();
     final LoggingSession session = session(target);

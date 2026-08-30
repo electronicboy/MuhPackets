@@ -89,7 +89,8 @@ public class LoggingSession {
    */
   public boolean process() {
     if (records.isEmpty()) {
-      reportDropped();
+      // No batch means no writer, and the drop count belongs in the file. Leave it pending for the
+      // next flush that does open one rather than reporting it somewhere the log cannot show it.
       return stillNeeded();
     }
 
@@ -105,7 +106,14 @@ public class LoggingSession {
       buffered.decrementAndGet();
     }
 
+    // Claimed inside the try so a failed write can hand it back; a marker that was never written
+    // must stay owed, or the log ends up with an unexplained gap and no count for it anywhere.
+    long lost = 0;
     try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
+      lost = dropped.getAndSet(0);
+      if (lost > 0) {
+        writer.write(dropMarker(lost));
+      }
       for (final LogRecord queued : batch) {
         queued.write(writer);
       }
@@ -113,19 +121,35 @@ public class LoggingSession {
       // is caught below, so a failed flush restores the batch rather than dropping it.
     } catch (IOException e) {
       restore(batch);
+      dropped.addAndGet(lost);
       drainFailures++;
       if (!writeFailureReported) {
         writeFailureReported = true;
         logger.log(Level.WARNING, "Could not write packet log " + target, e);
       }
-      reportDropped();
       return stillNeeded();
     }
 
     writeFailureReported = false;
     drainFailures = 0;
-    reportDropped();
+    if (lost > 0) {
+      // Also to the console: the file line is for whoever reads the log afterwards, this is for
+      // whoever is watching the server while it happens.
+      logger.warning("Dropped " + lost + " packet(s) for " + safeName
+        + ": buffer limit of " + maxBufferedRecords.getAsInt() + " reached");
+    }
     return stillNeeded();
+  }
+
+  /**
+   * Builds the in-file record of what was lost.
+   *
+   * <p>Written at the head of the batch that follows it, so it marks roughly where the gap is
+   * rather than exactly: records are dropped from the tail while this drains from the head, so some
+   * of what it counts was lost during the previous batch's write.</p>
+   */
+  private String dropMarker(long lost) {
+    return "# dropped " + lost + " record(s) before this point: buffer limit reached\n";
   }
 
   /**
@@ -162,14 +186,6 @@ public class LoggingSession {
       return false;
     }
     return true;
-  }
-
-  private void reportDropped() {
-    final long lost = dropped.getAndSet(0);
-    if (lost > 0) {
-      logger.warning("Dropped " + lost + " packet(s) for " + safeName
-        + ": buffer limit of " + maxBufferedRecords.getAsInt() + " reached");
-    }
   }
 
   @Override
