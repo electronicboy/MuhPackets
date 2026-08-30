@@ -12,44 +12,26 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.jspecify.annotations.Nullable;
-import pw.valaria.muhpackets.logger.LogRecord;
+import pw.valaria.muhpackets.logger.LogDirectory;
 import pw.valaria.muhpackets.logger.LoggingSession;
 import pw.valaria.muhpackets.logger.RecordBudget;
 import pw.valaria.muhpackets.network.HandlerRegistry;
 import pw.valaria.muhpackets.network.SessionRateLimiter;
 import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.Writer;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
-import java.util.stream.Stream;
 
 public final class MuhPackets extends JavaPlugin {
   Key network_key = Key.key("muhpackets", "hook");
   private MuhPacketsConfig muhPacketsConfig = new MuhPacketsConfig(this);
-  private static final int MAX_SESSION_NAME_LENGTH = 32;
   /** How long onDisable waits, in 10ms steps, for an in-flight flush before giving up on it. */
   private static final int FLUSH_WAIT_ATTEMPTS = 500;
-  /** How many suffixed filenames to try before giving up on opening a log. */
-  private static final int MAX_FILENAME_ATTEMPTS = 100;
   private final AtomicBoolean running = new AtomicBoolean(false);
   /**
    * Server-wide ceiling on buffered records, shared by every session. Starts unlimited and is
@@ -67,6 +49,8 @@ public final class MuhPackets extends JavaPlugin {
   private final SessionRateLimiter sessionRateLimiter = new SessionRateLimiter(System::nanoTime, 0, 0);
   /** Every pipeline we have inserted a handler into, so onDisable can take them out again. */
   private final HandlerRegistry handlers = new HandlerRegistry();
+  /** Naming, opening and expiry of the files themselves. */
+  private final LogDirectory logs = new LogDirectory(this::logsFolder, this::getLogger);
   /** Whether handlers should still buffer records; cleared first thing on disable. */
   private volatile boolean accepting;
   private @Nullable BukkitTask pollTask;
@@ -91,66 +75,13 @@ public final class MuhPackets extends JavaPlugin {
 
     this.reloadConfig();
 
-    clearOldLogs(this.getMuhPacketsConfig().getClearOldFilesDays());
+    final int deleted = logs.prune(this.getMuhPacketsConfig().getClearOldFilesDays());
+    if (deleted > 0) {
+      getLogger().info("Deleted " + deleted + " packet log(s) older than "
+        + this.getMuhPacketsConfig().getClearOldFilesDays() + " day(s)");
+    }
 
     this.accepting = true;
-  }
-
-  /**
-   * Deletes logs older than {@code days}, then prunes the directories left empty behind them.
-   *
-   * @param days retention in days; zero or negative disables cleanup
-   */
-  private void clearOldLogs(int days) {
-    final File logsFolder = logsFolder();
-    if (days <= 0 || !logsFolder.isDirectory()) {
-      return;
-    }
-    final Instant cutoff = ZonedDateTime.now().minusDays(days).toInstant();
-    final Path root = logsFolder.toPath();
-    final int[] deleted = {0};
-
-    // Single pass. Collecting every stale path into a list first, then walking the whole tree again
-    // to prune directories, meant holding the entire match set in memory during startup.
-    try {
-      Files.walkFileTree(root, new SimpleFileVisitor<>() {
-        @Override
-        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-          if (attrs.lastModifiedTime().toInstant().isBefore(cutoff)) {
-            try {
-              Files.delete(file);
-              deleted[0]++;
-            } catch (IOException e) {
-              getLogger().log(Level.WARNING, "Could not delete old log " + file, e);
-            }
-          }
-          return FileVisitResult.CONTINUE;
-        }
-
-        @Override
-        public FileVisitResult postVisitDirectory(Path dir, @Nullable IOException exc) {
-          // Runs after the directory's entries, so anything emptied above is pruned here. Sessions
-          // whose logs have all expired otherwise leave a directory behind forever.
-          if (!dir.equals(root)) {
-            try (Stream<Path> entries = Files.list(dir)) {
-              if (entries.findAny().isEmpty()) {
-                Files.delete(dir);
-              }
-            } catch (IOException ignored) {
-              // Best effort; a directory we cannot prune is not worth failing startup over.
-            }
-          }
-          return FileVisitResult.CONTINUE;
-        }
-      });
-    } catch (IOException e) {
-      getLogger().log(Level.WARNING, "Could not scan " + logsFolder + " for old logs", e);
-      return;
-    }
-
-    if (deleted[0] > 0) {
-      getLogger().info("Deleted " + deleted[0] + " packet log(s) older than " + days + " day(s)");
-    }
   }
 
   /**
@@ -317,81 +248,14 @@ public final class MuhPackets extends JavaPlugin {
     }
 
     // 'name' arrives straight off the wire in a login hello, before the player is authenticated,
-    // so it is entirely attacker controlled and must never be used as a path element unfiltered.
-    final String safeName = sanitiseSessionName(name);
-    final File targetDir = new File(logsFolder(), safeName);
-    final File target;
-    try {
-      targetDir.mkdirs();
-      final File created = createLogFile(targetDir);
-      if (created == null) {
-        getLogger().warning("Could not find a free log filename for " + safeName);
-        return null;
-      }
-      target = created;
-      writeHeader(target, name, safeName);
-    } catch (IOException | SecurityException e) {
-      getLogger().log(Level.WARNING, "Could not open a packet log for " + safeName, e);
+    // so it is entirely attacker controlled; LogDirectory is what keeps it away from the path.
+    final LogDirectory.Opened opened = logs.open(name);
+    if (opened == null) {
       return null;
     }
-    final LoggingSession loggingSession = new LoggingSession(getLogger(), name, safeName, target,
-      () -> getMuhPacketsConfig().getMaxBufferedRecords(), recordBudget);
+    final LoggingSession loggingSession = new LoggingSession(getLogger(), name, opened.safeName(),
+      opened.target(), () -> getMuhPacketsConfig().getMaxBufferedRecords(), recordBudget);
     this.sessions.add(loggingSession);
     return loggingSession;
-  }
-
-  /**
-   * Creates a log file, suffixing the name until an unused one is found.
-   *
-   * <p>Two sessions starting in the same millisecond previously had the second silently append to
-   * the first one's file, with no header of its own. Distinct client names that sanitise to the
-   * same directory make that more reachable than the timestamp alone suggests.</p>
-   */
-  static @Nullable File createLogFile(File targetDir) throws IOException {
-    final long stamp = System.currentTimeMillis();
-    for (int attempt = 0; attempt < MAX_FILENAME_ATTEMPTS; attempt++) {
-      final File candidate = new File(targetDir, attempt == 0 ? stamp + ".log" : stamp + "-" + attempt + ".log");
-      if (candidate.createNewFile()) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Writes a two-line preamble describing the file, so a log is interpretable on its own without
-   * having to consult the source or the README.
-   */
-  private void writeHeader(File target, String rawName, String safeName) {
-    try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
-      // The raw name is client supplied, so it goes through the same escaping as any logged value;
-      // otherwise a crafted name could forge extra log lines.
-      writer.write("# muhpackets v1 player=" + LogRecord.escaped(rawName)
-        + " dir=" + safeName
-        + " started=" + DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(LocalDateTime.now()) + "\n");
-      writer.write("# format: [timestamp] [protocol] [packet] key=value ...\n");
-    } catch (IOException e) {
-      getLogger().log(Level.WARNING, "Could not write log header to " + target, e);
-    }
-  }
-
-  /**
-   * Reduces a client-supplied name to a single, safe path segment.
-   *
-   * <p>Anything outside {@code [A-Za-z0-9_-]} is replaced, which removes both path separators and
-   * {@code .}, so {@code ..} traversal cannot survive. The result is length capped and never empty,
-   * so it can always be used as a directory name.</p>
-   */
-  static String sanitiseSessionName(@Nullable String raw) {
-    if (raw == null || raw.isEmpty()) {
-      return "unknown";
-    }
-    final StringBuilder out = new StringBuilder(Math.min(raw.length(), MAX_SESSION_NAME_LENGTH));
-    for (int i = 0; i < raw.length() && out.length() < MAX_SESSION_NAME_LENGTH; i++) {
-      final char c = raw.charAt(i);
-      out.append((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-        || c == '_' || c == '-' ? c : '_');
-    }
-    return out.isEmpty() ? "unknown" : out.toString();
   }
 }

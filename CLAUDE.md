@@ -55,7 +55,7 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
 - `PacketLoggerHandler` (`ChannelDuplexHandler`) sees inbound packets only (`channelRead`). A session
   is created lazily when a `ServerboundHelloPacket` arrives — that is where the player name comes
   from, so packets before login are never attributed. That name is unauthenticated and client
-  controlled; it must go through `MuhPackets#sanitiseSessionName` before touching the filesystem.
+  controlled; it must go through `LogDirectory#sanitiseName` before touching the filesystem.
   Connection phase comes from `getPacketListener().protocol()`, which is null early on.
 - `LoggingSession` is a producer/consumer buffer: netty threads `log()` into a bounded
   `ConcurrentLinkedDeque`, the async poll task drains it in `process()`. It takes the batch, writes,
@@ -72,6 +72,11 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
   Reflection metadata is cached per class in a `ClassValue`. `shouldLogField` is the denylist for
   fields that must not be dumped (`FriendlyByteBuf`, signature/chat-session types) — extend it there
   when a new packet type dumps garbage or huge buffers.
+- `LogDirectory` owns the files themselves: naming, opening, headers and expiry. Split out of the
+  plugin class because none of it needs a server, and because `sanitiseName` is the only thing
+  between an unauthenticated, client-supplied name and the filesystem - it is tested accordingly.
+  Its root and logger arrive as suppliers, since neither exists while the plugin's fields are
+  being initialised.
 - `MuhPacketsConfig` is a typed snapshot of `config.yml`, re-read on `reloadConfig()`. Its fields are
   volatile because it is written from the main thread and read from netty threads.
 
