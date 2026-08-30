@@ -1,7 +1,5 @@
 package pw.valaria.muhpackets.logger;
 
-import pw.valaria.muhpackets.MuhPackets;
-
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
@@ -14,9 +12,14 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Buffers records produced on netty threads and drains them to disk from the plugin's flush task.
+ *
+ * <p>Deliberately knows nothing about the plugin: it takes a logger rather than a
+ * {@code MuhPackets}, which is what makes its buffering behaviour testable without a running
+ * server.</p>
  */
 public class LoggingSession {
   /**
@@ -28,7 +31,7 @@ public class LoggingSession {
   /** How many consecutive failed flushes a closed session tolerates before its records are dropped. */
   private static final int MAX_DRAIN_FAILURES = 10;
 
-  private final MuhPackets muhPackets;
+  private final Logger logger;
   private final String name;
   private final String safeName;
   private final ConcurrentLinkedDeque<LogRecord> records = new ConcurrentLinkedDeque<>();
@@ -39,8 +42,8 @@ public class LoggingSession {
   private boolean writeFailureReported;
   private int drainFailures;
 
-  public LoggingSession(MuhPackets muhPackets, String name, String safeName, File target) {
-    this.muhPackets = muhPackets;
+  public LoggingSession(Logger logger, String name, String safeName, File target) {
+    this.logger = logger;
     this.name = name;
     this.safeName = safeName;
     this.target = target;
@@ -101,7 +104,7 @@ public class LoggingSession {
       drainFailures++;
       if (!writeFailureReported) {
         writeFailureReported = true;
-        muhPackets.getLogger().log(Level.WARNING, "Could not write packet log " + target, e);
+        logger.log(Level.WARNING, "Could not write packet log " + target, e);
       }
       reportDropped();
       return stillNeeded();
@@ -140,7 +143,7 @@ public class LoggingSession {
       return false;
     }
     if (drainFailures >= MAX_DRAIN_FAILURES) {
-      muhPackets.getLogger().warning("Giving up on " + buffered.get() + " unwritten packet(s) for "
+      logger.warning("Giving up on " + buffered.get() + " unwritten packet(s) for "
         + safeName + " after " + drainFailures + " failed attempts to write " + target);
       records.clear();
       buffered.set(0);
@@ -152,7 +155,7 @@ public class LoggingSession {
   private void reportDropped() {
     final long lost = dropped.getAndSet(0);
     if (lost > 0) {
-      muhPackets.getLogger().warning("Dropped " + lost + " packet(s) for " + safeName
+      logger.warning("Dropped " + lost + " packet(s) for " + safeName
         + ": buffer limit of " + MAX_BUFFERED_RECORDS + " reached");
     }
   }
