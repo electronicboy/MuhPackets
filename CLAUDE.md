@@ -20,7 +20,12 @@ single jar - see "Mappings / version support" below, which is the least obvious 
 The first build decompiles a Paper server via paperweight-userdev and needs roughly 4 GB of free RAM;
 it is OOM-killed on small machines.
 
-There are no tests. CI (`.github/workflows/build.yml`) only runs `./gradlew build`.
+`./gradlew test` runs the unit tests. They cover the pieces that hold no server state -
+`RecordBudget`, `SessionRateLimiter` (driven by an injected clock, never the wall clock),
+`LoggingSession` and `HandlerRegistry` (via netty's `EmbeddedChannel`) - which is
+why those classes take a `Logger` and their limits rather than a `MuhPackets`. Anything needing a
+live server is still verified by hand. CI (`.github/workflows/build.yml`) runs `./gradlew build`,
+which includes `test`.
 
 ## Architecture
 
@@ -29,25 +34,67 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
 - `MuhPackets` (JavaPlugin) registers a Paper `ChannelInitializeListener` that inserts a
   `PacketLoggerHandler` before the `packet_handler` in every connection's pipeline. It also owns the
   list of `LoggingSession`s and an async repeating task (`doPoll`, every 20 ticks) that flushes them.
-  Handlers cannot be removed from already-open connections, so they consult `isAccepting()` rather
-  than assuming the plugin is alive; `onDisable` clears that flag first, then drains every session.
+  `onDisable` clears `accepting`, removes every handler it installed (see `HandlerRegistry`), then
+  drains every session. Handlers still consult `isAccepting()`, because a packet can be in flight
+  while that is happening and removal can fail on an unhealthy channel.
+- `SessionRateLimiter` bounds how fast sessions may be opened, which is the axis a login flood
+  actually moves along - a session lasts as long as its connection, so capping how many exist at
+  once caps concurrent players instead. Token bucket, so a restart's reconnect storm still gets
+  logged while a sustained flood does not. `max-sessions` survives as an off-by-default ceiling.
+- `HandlerRegistry` records the `ChannelHandlerContext` of each installed handler, captured in
+  `handlerAdded` and dropped in `handlerRemoved` (which netty also fires when a channel closes).
+  `register` doubles as the shutdown interlock: channels initialise on netty threads while
+  `shutdown` runs on the main thread, so a connection accepted mid-sweep would otherwise install a
+  handler the sweep has already passed. Once shut down it refuses, and the handler removes itself.
+  Paper offers no way to enumerate open connections, so this self-kept list is the only handle on
+  them. It exists because a handler left in a live pipeline holds a strong reference to the plugin
+  instance, and through it the plugin classloader, so without removal every reload leaks a plugin
+  generation per open connection. `Connection.channel` is deliberately not used for this: it is
+  public on Paper 1.21.4 but private in 26.2, whereas `ChannelHandlerContext` is plain netty and
+  needs no version check.
 - `PacketLoggerHandler` (`ChannelDuplexHandler`) sees inbound packets only (`channelRead`). A session
   is created lazily when a `ServerboundHelloPacket` arrives — that is where the player name comes
   from, so packets before login are never attributed. That name is unauthenticated and client
-  controlled; it must go through `MuhPackets#sanitiseSessionName` before touching the filesystem.
+  controlled; it must go through `LogDirectory#sanitiseName` before touching the filesystem.
   Connection phase comes from `getPacketListener().protocol()`, which is null early on.
 - `LoggingSession` is a producer/consumer buffer: netty threads `log()` into a bounded
-  `ConcurrentLinkedDeque`, the async poll task drains it in `process()`. It peeks, writes, then
-  removes, so a failed write does not discard records; overflow is counted and reported.
-  `process()` returning false is what removes the session from `MuhPackets.sessions`.
+  `ConcurrentLinkedDeque`, the async poll task drains it in `process()`. It takes the batch, writes,
+  then releases, so a failed write does not discard records; overflow is counted and reported both
+  to the console and, as a `#`-prefixed marker line, into the log file itself, so a log is legible
+  on its own. `process()` returning false is what removes the session from `MuhPackets.sessions`.
+  It takes a `Logger` and its limits rather than the plugin, which is what makes it unit-testable.
+- `RecordBudget` is the server-wide ceiling on buffered records, shared by every session. The
+  per-session limit does not bound a login flood, which multiplies it by the connection count; this
+  does. Budget is released only after a batch is genuinely written, so the restore-on-failure path
+  cannot double-count, and `abandon()` hands back a dead session's share.
 - `LogRecord` captures a packet. Field values are read **on the netty thread at capture time**, not
   at flush time — a buffered packet may reference released netty buffers by the time it is written.
   Reflection metadata is cached per class in a `ClassValue`. `shouldLogField` is the denylist for
   fields that must not be dumped (`FriendlyByteBuf`, signature/chat-session types) — extend it there
   when a new packet type dumps garbage or huge buffers.
+- `LogDirectory` owns the files themselves: naming, opening, headers and expiry. Split out of the
+  plugin class because none of it needs a server, and because `sanitiseName` is the only thing
+  between an unauthenticated, client-supplied name and the filesystem - it is tested accordingly.
+  Its root and logger arrive as suppliers, since neither exists while the plugin's fields are
+  being initialised.
 - `MuhPacketsConfig` is a typed snapshot of `config.yml`, re-read on `reloadConfig()`. Its fields are
   volatile because it is written from the main thread and read from netty threads.
-  `NetworkInterceptor` is an empty leftover class.
+
+## Tuning
+
+The defaults in `config.yml` are sized against observed traffic rather than picked for roundness,
+so change them from the same starting point:
+
+- A casual player runs **200-300 packets per second**. The flush task drains everything once a
+  second, so `max-buffered-records` is really the per-connection ceiling on records captured per
+  second; 10000 leaves a normal connection ~30s of slack if a flush stalls.
+- The aim under attack is **enough coverage to identify what is being targeted** - attacks usually
+  lean on something specific that induces decode or handling work - not a complete recording. The
+  drop marker accounts for whatever is lost past the limit.
+- **Login floods are a different class of problem** and mostly not worth recording. Beyond roughly
+  10 logins/second sustained there is nothing new to learn, so `max-sessions-per-second` caps it
+  there while `max-session-burst` stays large enough that a restart's reconnect storm is logged
+  normally.
 
 ## Log output format
 

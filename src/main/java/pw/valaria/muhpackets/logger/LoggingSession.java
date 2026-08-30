@@ -1,7 +1,5 @@
 package pw.valaria.muhpackets.logger;
 
-import pw.valaria.muhpackets.MuhPackets;
-
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
@@ -13,58 +11,72 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Buffers records produced on netty threads and drains them to disk from the plugin's flush task.
+ *
+ * <p>Deliberately knows nothing about the plugin: it takes a logger and its limits rather than a
+ * {@code MuhPackets}, which is what makes its buffering and overflow behaviour testable without a
+ * running server.</p>
  */
 public class LoggingSession {
-  /**
-   * Upper bound on records held in memory. Reached only if the flush task cannot keep up or the
-   * log file has become unwritable; without it a stuck session grows until the server dies.
-   */
-  private static final int MAX_BUFFERED_RECORDS = 100_000;
-
   /** How many consecutive failed flushes a closed session tolerates before its records are dropped. */
   private static final int MAX_DRAIN_FAILURES = 10;
 
-  private final MuhPackets muhPackets;
+  private final Logger logger;
   private final String name;
   private final String safeName;
   private final ConcurrentLinkedDeque<LogRecord> records = new ConcurrentLinkedDeque<>();
   private final AtomicInteger buffered = new AtomicInteger();
-  private final AtomicLong dropped = new AtomicLong();
+  /** Records refused because this session was already holding its own maximum. */
+  private final AtomicLong droppedSessionLimit = new AtomicLong();
+  /** Records refused because every session together was holding the server-wide maximum. */
+  private final AtomicLong droppedTotalLimit = new AtomicLong();
   private final File target;
+  /**
+   * Read per record rather than captured once, so lowering the limit during an incident takes
+   * effect on connections that are already open.
+   */
+  private final IntSupplier maxBufferedRecords;
+  private final RecordBudget budget;
   private volatile boolean isActive = true;
   private boolean writeFailureReported;
   private int drainFailures;
 
-  public LoggingSession(MuhPackets muhPackets, String name, String safeName, File target) {
-    this.muhPackets = muhPackets;
+  public LoggingSession(Logger logger, String name, String safeName, File target,
+                        IntSupplier maxBufferedRecords, RecordBudget budget) {
+    this.logger = logger;
     this.name = name;
     this.safeName = safeName;
     this.target = target;
+    this.maxBufferedRecords = maxBufferedRecords;
+    this.budget = budget;
   }
 
   public void log(LogRecord logRecord) {
-    if (buffered.get() >= MAX_BUFFERED_RECORDS) {
-      dropped.incrementAndGet();
+    final int limit = maxBufferedRecords.getAsInt();
+    if (limit > 0 && buffered.get() >= limit) {
+      droppedSessionLimit.incrementAndGet();
+      return;
+    }
+    if (!budget.tryAcquire()) {
+      droppedTotalLimit.incrementAndGet();
       return;
     }
     records.add(logRecord);
     buffered.incrementAndGet();
   }
 
+  /** Records currently held in memory. Package-private: this exists for the tests. */
+  int buffered() {
+    return buffered.get();
+  }
+
   public void close() {
     this.isActive = false;
-  }
-
-  public String safeName() {
-    return safeName;
-  }
-
-  public File target() {
-    return target;
   }
 
   /**
@@ -73,11 +85,6 @@ public class LoggingSession {
    * @return whether this session should stay open; false means it is closed and fully drained
    */
   public boolean process() {
-    if (records.isEmpty()) {
-      reportDropped();
-      return stillNeeded();
-    }
-
     // Take the batch up front rather than iterating and then removing that many from the head.
     // A ConcurrentLinkedDeque iterator is only weakly consistent, so "the first N entries are the
     // ones just written" holds only while this is the sole thread removing - true today, but it is
@@ -90,7 +97,24 @@ public class LoggingSession {
       buffered.decrementAndGet();
     }
 
+    // An empty batch is still worth a write when records were dropped. The server-wide budget
+    // refuses records without this session ever buffering one, so a starved session can hold a
+    // drop count and an empty queue at once - and if it then closes, stillNeeded() retires it and
+    // the count goes with it. The gap has to be recorded before that happens.
+    if (batch.isEmpty() && droppedSessionLimit.get() == 0 && droppedTotalLimit.get() == 0) {
+      return stillNeeded();
+    }
+
+    // Claimed inside the try so a failed write can hand them back; a marker that was never written
+    // must stay owed, or the log ends up with an unexplained gap and no count for it anywhere.
+    long sessionLost = 0;
+    long totalLost = 0;
     try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
+      sessionLost = droppedSessionLimit.getAndSet(0);
+      totalLost = droppedTotalLimit.getAndSet(0);
+      if (sessionLost > 0 || totalLost > 0) {
+        writer.write(dropMarker(sessionLost, totalLost));
+      }
       for (final LogRecord queued : batch) {
         queued.write(writer);
       }
@@ -98,19 +122,50 @@ public class LoggingSession {
       // is caught below, so a failed flush restores the batch rather than dropping it.
     } catch (IOException e) {
       restore(batch);
+      droppedSessionLimit.addAndGet(sessionLost);
+      droppedTotalLimit.addAndGet(totalLost);
       drainFailures++;
       if (!writeFailureReported) {
         writeFailureReported = true;
-        muhPackets.getLogger().log(Level.WARNING, "Could not write packet log " + target, e);
+        logger.log(Level.WARNING, "Could not write packet log " + target, e);
       }
-      reportDropped();
       return stillNeeded();
     }
 
+    // Only now are those records genuinely out of memory.
+    budget.release(batch.size());
     writeFailureReported = false;
     drainFailures = 0;
-    reportDropped();
+    if (sessionLost > 0 || totalLost > 0) {
+      // Also to the console: the file line is for whoever reads the log afterwards, this is for
+      // whoever is watching the server while it happens.
+      logger.warning("Dropped " + (sessionLost + totalLost) + " packet(s) for " + safeName
+        + " (" + sessionLost + " at the per-connection limit, " + totalLost + " at the server-wide limit)");
+    }
     return stillNeeded();
+  }
+
+  /**
+   * Builds the in-file record of what was lost.
+   *
+   * <p>Written at the head of the batch that follows it, so it marks roughly where the gap is
+   * rather than exactly: records are dropped from the tail while this drains from the head, so some
+   * of what it counts was lost during the previous batch's write.</p>
+   */
+  private String dropMarker(long sessionLost, long totalLost) {
+    final StringBuilder out = new StringBuilder("# dropped ")
+      .append(sessionLost + totalLost)
+      .append(" record(s) before this point:");
+    if (sessionLost > 0) {
+      out.append(' ').append(sessionLost).append(" at the per-connection buffer limit");
+    }
+    if (sessionLost > 0 && totalLost > 0) {
+      out.append(',');
+    }
+    if (totalLost > 0) {
+      out.append(' ').append(totalLost).append(" at the server-wide buffer limit");
+    }
+    return out.append('\n').toString();
   }
 
   /**
@@ -140,21 +195,23 @@ public class LoggingSession {
       return false;
     }
     if (drainFailures >= MAX_DRAIN_FAILURES) {
-      muhPackets.getLogger().warning("Giving up on " + buffered.get() + " unwritten packet(s) for "
+      logger.warning("Giving up on " + buffered.get() + " unwritten packet(s) for "
         + safeName + " after " + drainFailures + " failed attempts to write " + target);
-      records.clear();
-      buffered.set(0);
+      abandon();
       return false;
     }
     return true;
   }
 
-  private void reportDropped() {
-    final long lost = dropped.getAndSet(0);
-    if (lost > 0) {
-      muhPackets.getLogger().warning("Dropped " + lost + " packet(s) for " + safeName
-        + ": buffer limit of " + MAX_BUFFERED_RECORDS + " reached");
-    }
+  /**
+   * Discards whatever is still buffered and hands its share of the server-wide budget back.
+   *
+   * <p>Without the release, a session that dies holding records would leak budget permanently and
+   * the server would slowly stop logging anything at all.</p>
+   */
+  void abandon() {
+    records.clear();
+    budget.release(buffered.getAndSet(0));
   }
 
   @Override

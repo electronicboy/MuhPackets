@@ -25,6 +25,9 @@ dependencies {
   // Building against 1.21.4 emits Java 21 bytecode, and every symbol this plugin touches is
   // unchanged all the way up to 26.2 (verified with jdeps against a real 26.2 server jar).
   paperweight.paperDevBundle("1.21.4-R0.1-SNAPSHOT")
+
+  testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+  testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks {
@@ -37,6 +40,9 @@ tasks {
   }
   processResources {
     filteringCharset = Charsets.UTF_8.name()
+  }
+  test {
+    useJUnitPlatform()
   }
 }
 

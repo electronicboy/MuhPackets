@@ -69,7 +69,11 @@ public class LogRecord {
   private final Map<String, String> fields;
   private final LocalDateTime time = LocalDateTime.now();
 
-  private LogRecord(@Nullable ConnectionProtocol protocol, String packetName, Map<String, String> fields) {
+  /**
+   * Package-private rather than private so tests can build a record without standing up a real
+   * NMS packet; {@link #capture} is the only way to make one from an actual packet.
+   */
+  LogRecord(@Nullable ConnectionProtocol protocol, String packetName, Map<String, String> fields) {
     this.protocol = protocol;
     this.packetName = packetName;
     this.fields = fields;
