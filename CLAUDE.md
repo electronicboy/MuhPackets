@@ -21,7 +21,8 @@ The first build decompiles a Paper server via paperweight-userdev and needs roug
 it is OOM-killed on small machines.
 
 `./gradlew test` runs the unit tests. They cover the pieces that hold no server state -
-`RecordBudget`, `LoggingSession` and `HandlerRegistry` (via netty's `EmbeddedChannel`) - which is
+`RecordBudget`, `SessionRateLimiter` (driven by an injected clock, never the wall clock),
+`LoggingSession` and `HandlerRegistry` (via netty's `EmbeddedChannel`) - which is
 why those classes take a `Logger` and their limits rather than a `MuhPackets`. Anything needing a
 live server is still verified by hand. CI (`.github/workflows/build.yml`) runs `./gradlew build`,
 which includes `test`.
@@ -36,6 +37,10 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
   `onDisable` clears `accepting`, removes every handler it installed (see `HandlerRegistry`), then
   drains every session. Handlers still consult `isAccepting()`, because a packet can be in flight
   while that is happening and removal can fail on an unhealthy channel.
+- `SessionRateLimiter` bounds how fast sessions may be opened, which is the axis a login flood
+  actually moves along - a session lasts as long as its connection, so capping how many exist at
+  once caps concurrent players instead. Token bucket, so a restart's reconnect storm still gets
+  logged while a sustained flood does not. `max-sessions` survives as an off-by-default ceiling.
 - `HandlerRegistry` records the `ChannelHandlerContext` of each installed handler, captured in
   `handlerAdded` and dropped in `handlerRemoved` (which netty also fires when a channel closes).
   Paper offers no way to enumerate open connections, so this self-kept list is the only handle on
@@ -67,6 +72,22 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
 - `MuhPacketsConfig` is a typed snapshot of `config.yml`, re-read on `reloadConfig()`. Its fields are
   volatile because it is written from the main thread and read from netty threads.
   `NetworkInterceptor` is an empty leftover class.
+
+## Tuning
+
+The defaults in `config.yml` are sized against observed traffic rather than picked for roundness,
+so change them from the same starting point:
+
+- A casual player runs **200-300 packets per second**. The flush task drains everything once a
+  second, so `max-buffered-records` is really the per-connection ceiling on records captured per
+  second; 10000 leaves a normal connection ~30s of slack if a flush stalls.
+- The aim under attack is **enough coverage to identify what is being targeted** - attacks usually
+  lean on something specific that induces decode or handling work - not a complete recording. The
+  drop marker accounts for whatever is lost past the limit.
+- **Login floods are a different class of problem** and mostly not worth recording. Beyond roughly
+  10 logins/second sustained there is nothing new to learn, so `max-sessions-per-second` caps it
+  there while `max-session-burst` stays large enough that a restart's reconnect storm is logged
+  normally.
 
 ## Log output format
 
