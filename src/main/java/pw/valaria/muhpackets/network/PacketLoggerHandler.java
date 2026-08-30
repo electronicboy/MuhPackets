@@ -37,9 +37,29 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
   }
 
   @Override
+  public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+    // Recorded here rather than in the channel initialiser because this is the context we would
+    // need to undo the installation, and it is the only handle on this pipeline we ever get.
+    muhPackets.handlers().register(ctx);
+    super.handlerAdded(ctx);
+  }
+
+  @Override
+  public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+    muhPackets.handlers().unregister(ctx);
+    // Also fires when the channel closes, so this is a strictly more reliable place to close the
+    // session than channelUnregistered - which never runs at all if we are removed first.
+    if (loggingSession != null) {
+      loggingSession.close();
+    }
+    super.handlerRemoved(ctx);
+  }
+
+  @Override
   public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-    // This handler stays in the pipeline of already-open connections after the plugin is disabled,
-    // so it has to check rather than assume the plugin is still there.
+    // onDisable takes these handlers back out of their pipelines, but a packet can already be in
+    // flight when that happens, and removal can fail on an unhealthy channel. Cheap enough to check
+    // rather than assume the plugin behind us is still alive.
     if (!muhPackets.isAccepting()) {
       super.channelRead(ctx, msg);
       return;
@@ -61,6 +81,7 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
 
   @Override
   public void channelUnregistered(ChannelHandlerContext ctx) throws Exception {
+    // Kept alongside handlerRemoved; close() is idempotent and whichever fires first is fine.
     if (loggingSession != null) {
       loggingSession.close();
     }

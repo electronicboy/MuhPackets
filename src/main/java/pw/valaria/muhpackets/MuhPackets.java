@@ -15,6 +15,7 @@ import org.jspecify.annotations.Nullable;
 import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
 import pw.valaria.muhpackets.logger.RecordBudget;
+import pw.valaria.muhpackets.network.HandlerRegistry;
 import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
 import java.io.BufferedWriter;
@@ -56,6 +57,8 @@ public final class MuhPackets extends JavaPlugin {
   private final RecordBudget recordBudget = new RecordBudget(0);
   /** Connections not logged because the session limit was already in use, pending a report. */
   private final AtomicLong refusedSessions = new AtomicLong();
+  /** Every pipeline we have inserted a handler into, so onDisable can take them out again. */
+  private final HandlerRegistry handlers = new HandlerRegistry();
   /** Whether handlers should still buffer records; cleared first thing on disable. */
   private volatile boolean accepting;
   private @Nullable BukkitTask pollTask;
@@ -65,7 +68,12 @@ public final class MuhPackets extends JavaPlugin {
   @Override
   public void onEnable() {
     saveDefaultConfig();
-    io.papermc.paper.network.ChannelInitializeListenerHolder.addListener(network_key, new ChannelInitializeListener() {
+    // A previous generation of this plugin may still be registered if a reload left one behind;
+    // addListener would otherwise stack a second listener under the same key.
+    if (ChannelInitializeListenerHolder.hasListener(network_key)) {
+      ChannelInitializeListenerHolder.removeListener(network_key);
+    }
+    ChannelInitializeListenerHolder.addListener(network_key, new ChannelInitializeListener() {
       @Override
       public void afterInitChannel(Channel channel) {
         channel.pipeline().addBefore("packet_handler", "muh_logger", new PacketLoggerHandler(MuhPackets.this, channel));
@@ -148,6 +156,11 @@ public final class MuhPackets extends JavaPlugin {
     return new File(getDataFolder(), "logs/");
   }
 
+  /** The pipelines this plugin has installed handlers into. */
+  public HandlerRegistry handlers() {
+    return handlers;
+  }
+
   /** Whether packet handlers should keep buffering records. */
   public boolean isAccepting() {
     return accepting;
@@ -213,10 +226,19 @@ public final class MuhPackets extends JavaPlugin {
 
   @Override
   public void onDisable() {
-    // Stop accepting first: handlers left in live pipelines must not keep buffering into a plugin
-    // that is going away, and they outlive us because we cannot remove them from open connections.
+    // Stop accepting before anything else, so no handler can buffer into a plugin that is going
+    // away while the rest of this runs.
     this.accepting = false;
     ChannelInitializeListenerHolder.removeListener(network_key);
+
+    // Take our handlers back out of the pipelines they are still sitting in. Each one holds a
+    // reference to this plugin instance, and through it this plugin's classloader, so leaving them
+    // behind leaks a whole plugin generation per open connection every time the server reloads.
+    final int removed = handlers.removeAll(getLogger());
+    if (removed > 0) {
+      getLogger().info("Removed the packet logger from " + removed + " open connection(s)");
+    }
+
     if (this.pollTask != null) {
       this.pollTask.cancel();
       this.pollTask = null;
