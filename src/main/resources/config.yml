@@ -15,6 +15,18 @@ max-buffered-records: 10000
 # Roughly 300 casual players' worth of one-second buffers. 0 or below disables the limit.
 max-total-buffered-records: 100000
 
-# How many logging sessions may exist at once. Further connections are not logged until one ends.
+# New logging sessions opened per second. A login flood is a rate problem rather than a concurrency
+# one, and sustained logins past this rate are not worth recording - but the permits granted each
+# second still give enough coverage to see whether the login path itself is being leaned on.
 # 0 or below disables the limit.
-max-sessions: 200
+max-sessions-per-second: 10
+
+# Sessions that may be opened in one go before that rate starts applying. A restart reconnects
+# everybody at once, and those are real players whose logs are wanted.
+max-session-burst: 200
+
+# Hard ceiling on sessions in existence at once. Off by default: a session lasts as long as its
+# connection, so this is really a cap on concurrent players, and it would silently stop logging
+# anyone past the limit on a busy server. The rate limit above is the defence against a flood, and
+# max-total-buffered-records is the memory bound. 0 or below disables the limit.
+max-sessions: 0

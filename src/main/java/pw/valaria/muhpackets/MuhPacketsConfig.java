@@ -16,7 +16,9 @@ public class MuhPacketsConfig {
   private volatile int clearOldFilesDays = -1;
   private volatile int maxBufferedRecords = 10_000;
   private volatile int maxTotalBufferedRecords = 100_000;
-  private volatile int maxSessions = 200;
+  private volatile int maxSessions = 0;
+  private volatile double maxSessionsPerSecond = 10;
+  private volatile int maxSessionBurst = 200;
 
   public MuhPacketsConfig(MuhPackets muhPackets) {
     this.muhPackets = muhPackets;
@@ -29,7 +31,9 @@ public class MuhPacketsConfig {
     this.clearOldFilesDays = muhPackets.getConfig().getInt("clear-old-files-days", -1);
     this.maxBufferedRecords = muhPackets.getConfig().getInt("max-buffered-records", 10_000);
     this.maxTotalBufferedRecords = muhPackets.getConfig().getInt("max-total-buffered-records", 100_000);
-    this.maxSessions = muhPackets.getConfig().getInt("max-sessions", 200);
+    this.maxSessions = muhPackets.getConfig().getInt("max-sessions", 0);
+    this.maxSessionsPerSecond = muhPackets.getConfig().getDouble("max-sessions-per-second", 10);
+    this.maxSessionBurst = muhPackets.getConfig().getInt("max-session-burst", 200);
   }
 
   public boolean isLogPlayOnly() {
@@ -61,5 +65,15 @@ public class MuhPacketsConfig {
   /** Sessions that may exist at once; zero or below means unlimited. */
   public int getMaxSessions() {
     return maxSessions;
+  }
+
+  /** New sessions opened per second; zero or below means unlimited. */
+  public double getMaxSessionsPerSecond() {
+    return maxSessionsPerSecond;
+  }
+
+  /** Sessions openable in one go before the per-second rate applies. */
+  public int getMaxSessionBurst() {
+    return maxSessionBurst;
   }
 }

@@ -16,6 +16,7 @@ import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
 import pw.valaria.muhpackets.logger.RecordBudget;
 import pw.valaria.muhpackets.network.HandlerRegistry;
+import pw.valaria.muhpackets.network.SessionRateLimiter;
 import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
 import java.io.BufferedWriter;
@@ -57,6 +58,13 @@ public final class MuhPackets extends JavaPlugin {
   private final RecordBudget recordBudget = new RecordBudget(0);
   /** Connections not logged because the session limit was already in use, pending a report. */
   private final AtomicLong refusedSessions = new AtomicLong();
+  /** Connections not logged because logins were arriving too fast, pending a report. */
+  private final AtomicLong rateLimitedSessions = new AtomicLong();
+  /**
+   * Ceiling on how fast new sessions may be opened. Starts unlimited and is given its real limits
+   * by the reloadConfig() call in onEnable.
+   */
+  private final SessionRateLimiter sessionRateLimiter = new SessionRateLimiter(System::nanoTime, 0, 0);
   /** Every pipeline we have inserted a handler into, so onDisable can take them out again. */
   private final HandlerRegistry handlers = new HandlerRegistry();
   /** Whether handlers should still buffer records; cleared first thing on disable. */
@@ -181,7 +189,7 @@ public final class MuhPackets extends JavaPlugin {
           getLogger().info("Closing session: " + session.toString());
         }
       }
-      reportRefusedSessions();
+      reportUnloggedConnections();
     } catch (Throwable thrown) {
       // Never let a failure here kill the repeating task, but do not hide it either.
       getLogger().log(Level.WARNING, "Failed to flush packet logs", thrown);
@@ -194,9 +202,15 @@ public final class MuhPackets extends JavaPlugin {
    * Reports connections that went unlogged, once per flush rather than once per connection.
    *
    * <p>A login flood is exactly when this fires, so logging each refusal individually would turn
-   * the console into the same flood.</p>
+   * the console into the same flood. The count is also the measurement: it is the difference
+   * between the login rate we recorded and the one actually arriving.</p>
    */
-  private void reportRefusedSessions() {
+  private void reportUnloggedConnections() {
+    final long rateLimited = rateLimitedSessions.getAndSet(0);
+    if (rateLimited > 0) {
+      getLogger().warning("Did not log " + rateLimited + " connection(s): logins arriving faster than "
+        + getMuhPacketsConfig().getMaxSessionsPerSecond() + " per second");
+    }
     final long refused = refusedSessions.getAndSet(0);
     if (refused > 0) {
       getLogger().warning("Did not log " + refused + " connection(s): already at the limit of "
@@ -222,6 +236,8 @@ public final class MuhPackets extends JavaPlugin {
     // The budget outlives any single reload, so it is retuned rather than replaced; lowering it
     // below current usage simply refuses new records until the excess has drained.
     this.recordBudget.setCapacity(this.muhPacketsConfig.getMaxTotalBufferedRecords());
+    this.sessionRateLimiter.reconfigure(this.muhPacketsConfig.getMaxSessionsPerSecond(),
+      this.muhPacketsConfig.getMaxSessionBurst());
   }
 
   @Override
@@ -285,10 +301,15 @@ public final class MuhPackets extends JavaPlugin {
   }
 
   public @Nullable LoggingSession createLoggingSession(String name) {
-    // Checked before anything touches the disk. Creating a session costs a mkdirs, a createNewFile
-    // and a header write on the netty thread, so under a login flood the refusal has to happen
-    // before that work, not after. Concurrent logins can overshoot the limit slightly; that is
-    // cheaper than serialising every connection through a lock for an approximate cap.
+    // Both checks come before anything touches the disk. Opening a session costs a mkdirs, a
+    // createNewFile and a header write on the netty thread, so under a login flood the refusal has
+    // to happen before that work, not after it.
+    if (!sessionRateLimiter.tryAcquire()) {
+      rateLimitedSessions.incrementAndGet();
+      return null;
+    }
+    // Off by default, and a last-resort ceiling rather than the flood defence, so concurrent
+    // logins overshooting it slightly does not matter.
     final int maxSessions = getMuhPacketsConfig().getMaxSessions();
     if (maxSessions > 0 && sessions.size() >= maxSessions) {
       refusedSessions.incrementAndGet();
