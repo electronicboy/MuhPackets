@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -22,12 +23,6 @@ import java.util.logging.Logger;
  * server.</p>
  */
 public class LoggingSession {
-  /**
-   * Upper bound on records held in memory. Reached only if the flush task cannot keep up or the
-   * log file has become unwritable; without it a stuck session grows until the server dies.
-   */
-  private static final int MAX_BUFFERED_RECORDS = 100_000;
-
   /** How many consecutive failed flushes a closed session tolerates before its records are dropped. */
   private static final int MAX_DRAIN_FAILURES = 10;
 
@@ -38,24 +33,41 @@ public class LoggingSession {
   private final AtomicInteger buffered = new AtomicInteger();
   private final AtomicLong dropped = new AtomicLong();
   private final File target;
+  /**
+   * Upper bound on records held in memory; zero or below means unlimited. Reached only if the
+   * flush task cannot keep up or the log file has become unwritable; without it a stuck session
+   * grows until the server dies.
+   *
+   * <p>Read per record rather than captured once, so lowering the limit during an incident takes
+   * effect on connections that are already open.</p>
+   */
+  private final IntSupplier maxBufferedRecords;
   private volatile boolean isActive = true;
   private boolean writeFailureReported;
   private int drainFailures;
 
-  public LoggingSession(Logger logger, String name, String safeName, File target) {
+  public LoggingSession(Logger logger, String name, String safeName, File target,
+                        IntSupplier maxBufferedRecords) {
     this.logger = logger;
     this.name = name;
     this.safeName = safeName;
     this.target = target;
+    this.maxBufferedRecords = maxBufferedRecords;
   }
 
   public void log(LogRecord logRecord) {
-    if (buffered.get() >= MAX_BUFFERED_RECORDS) {
+    final int limit = maxBufferedRecords.getAsInt();
+    if (limit > 0 && buffered.get() >= limit) {
       dropped.incrementAndGet();
       return;
     }
     records.add(logRecord);
     buffered.incrementAndGet();
+  }
+
+  /** Records currently held in memory. */
+  public int buffered() {
+    return buffered.get();
   }
 
   public void close() {
@@ -156,7 +168,7 @@ public class LoggingSession {
     final long lost = dropped.getAndSet(0);
     if (lost > 0) {
       logger.warning("Dropped " + lost + " packet(s) for " + safeName
-        + ": buffer limit of " + MAX_BUFFERED_RECORDS + " reached");
+        + ": buffer limit of " + maxBufferedRecords.getAsInt() + " reached");
     }
   }
 

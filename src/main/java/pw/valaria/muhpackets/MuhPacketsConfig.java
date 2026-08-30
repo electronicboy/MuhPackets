@@ -14,6 +14,7 @@ public class MuhPacketsConfig {
   private volatile boolean skipMovePackets;
   private volatile Set<String> ignoredPackets = Set.of();
   private volatile int clearOldFilesDays = -1;
+  private volatile int maxBufferedRecords = 100_000;
 
   public MuhPacketsConfig(MuhPackets muhPackets) {
     this.muhPackets = muhPackets;
@@ -24,6 +25,7 @@ public class MuhPacketsConfig {
     this.skipMovePackets = muhPackets.getConfig().getBoolean("skip-move-packets", true);
     this.ignoredPackets = Set.copyOf(muhPackets.getConfig().getStringList("ignored-packets"));
     this.clearOldFilesDays = muhPackets.getConfig().getInt("clear-old-files-days", -1);
+    this.maxBufferedRecords = muhPackets.getConfig().getInt("max-buffered-records", 100_000);
   }
 
   public boolean isLogPlayOnly() {
@@ -40,5 +42,10 @@ public class MuhPacketsConfig {
 
   public int getClearOldFilesDays() {
     return clearOldFilesDays;
+  }
+
+  /** Records one session may buffer; zero or below means unlimited. */
+  public int getMaxBufferedRecords() {
+    return maxBufferedRecords;
   }
 }

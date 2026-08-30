@@ -254,7 +254,8 @@ public final class MuhPackets extends JavaPlugin {
       getLogger().log(Level.WARNING, "Could not open a packet log for " + safeName, e);
       return null;
     }
-    final LoggingSession loggingSession = new LoggingSession(getLogger(), name, safeName, target);
+    final LoggingSession loggingSession = new LoggingSession(getLogger(), name, safeName, target,
+      () -> getMuhPacketsConfig().getMaxBufferedRecords());
     this.sessions.add(loggingSession);
     return loggingSession;
   }

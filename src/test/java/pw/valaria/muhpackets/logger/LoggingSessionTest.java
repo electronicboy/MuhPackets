@@ -34,7 +34,11 @@ class LoggingSessionTest {
   }
 
   private LoggingSession session(File target) {
-    return new LoggingSession(logger, "player", "player", target);
+    return session(target, 0);
+  }
+
+  private LoggingSession session(File target, int limit) {
+    return new LoggingSession(logger, "player", "player", target, () -> limit);
   }
 
   private static LogRecord record(String name) {
@@ -73,6 +77,28 @@ class LoggingSessionTest {
     session.process();
 
     assertEquals(2, lines(target).size(), "a second flush must not truncate the first");
+  }
+
+  @Test
+  void stopsBufferingAtTheLimit() {
+    final LoggingSession session = session(dir.resolve("out.log").toFile(), 2);
+
+    for (int i = 0; i < 5; i++) {
+      session.log(record("P" + i));
+    }
+
+    assertEquals(2, session.buffered(), "the limit is what stands between a flood and the heap");
+  }
+
+  @Test
+  void aLimitOfZeroMeansUnlimited() {
+    final LoggingSession session = session(dir.resolve("out.log").toFile(), 0);
+
+    for (int i = 0; i < 50; i++) {
+      session.log(record("P" + i));
+    }
+
+    assertEquals(50, session.buffered());
   }
 
   @Test

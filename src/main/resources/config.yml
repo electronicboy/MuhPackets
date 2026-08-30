@@ -2,3 +2,7 @@ only-log-play: true
 skip-move-packets: true
 ignored-packets: []
 clear-old-files-days: -1
+
+# Records one connection may hold in memory while waiting to be written. Reached only when the
+# flush task cannot keep up or the log file has become unwritable. 0 or below disables the limit.
+max-buffered-records: 100000
