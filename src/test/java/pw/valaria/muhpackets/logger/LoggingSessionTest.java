@@ -34,11 +34,15 @@ class LoggingSessionTest {
   }
 
   private LoggingSession session(File target) {
-    return session(target, 0);
+    return session(target, 0, new RecordBudget(0));
   }
 
   private LoggingSession session(File target, int limit) {
-    return new LoggingSession(logger, "player", "player", target, () -> limit);
+    return session(target, limit, new RecordBudget(0));
+  }
+
+  private LoggingSession session(File target, int limit, RecordBudget budget) {
+    return new LoggingSession(logger, "player", "player", target, () -> limit, budget);
   }
 
   private static LogRecord record(String name) {
@@ -112,8 +116,8 @@ class LoggingSessionTest {
     session.process();
 
     final List<String> lines = lines(target);
-    assertEquals("# dropped 3 record(s) before this point: buffer limit reached", lines.get(0),
-      "a log has to say what is missing from it; the console may be long gone");
+    assertEquals("# dropped 3 record(s) before this point: 3 at the per-connection buffer limit",
+      lines.get(0), "a log has to say what is missing from it; the console may be long gone");
     assertEquals(3, lines.size(), "marker plus the two records that fit");
   }
 
@@ -146,8 +150,93 @@ class LoggingSessionTest {
     assertTrue(session.process());
 
     final List<String> lines = lines(dir.resolve("unwritable").toFile());
-    assertEquals("# dropped 2 record(s) before this point: buffer limit reached", lines.get(0));
+    assertEquals("# dropped 2 record(s) before this point: 2 at the per-connection buffer limit",
+      lines.get(0));
     assertEquals(2, lines.size(), "marker plus the record that was held back");
+  }
+
+  @Test
+  void recordsServerWideOverflowSeparately() throws IOException {
+    final File target = dir.resolve("out.log").toFile();
+    final LoggingSession session = session(target, 0, new RecordBudget(2));
+
+    for (int i = 0; i < 5; i++) {
+      session.log(record("P" + i));
+    }
+    session.process();
+
+    assertEquals("# dropped 3 record(s) before this point: 3 at the server-wide buffer limit",
+      lines(target).get(0), "which limit was hit is the difference between two diagnoses");
+  }
+
+  @Test
+  void reportsBothOverflowCausesInOneMarker() throws IOException {
+    // The two causes can only co-occur across a drain: the per-session limit is checked first, so
+    // while a session is full it never reaches the budget at all.
+    final RecordBudget budget = new RecordBudget(3);
+    final File target = dir.resolve("a.log").toFile();
+    // The session limit must sit below the budget, or the budget always refuses first and the
+    // per-session limit is never reached.
+    final LoggingSession a = session(target, 2, budget);
+    final LoggingSession other = session(dir.resolve("b.log").toFile(), 10, budget);
+
+    // Another connection soaks up the whole server-wide budget, so this one is refused by it.
+    other.log(record("X"));
+    other.log(record("Y"));
+    other.log(record("Z"));
+    a.log(record("A"));
+
+    // That connection drains, handing the budget back; now this one fills up on its own limit.
+    other.process();
+    for (int i = 0; i < 3; i++) {
+      a.log(record("P" + i));
+    }
+
+    a.process();
+
+    assertEquals("# dropped 2 record(s) before this point: 1 at the per-connection buffer limit,"
+      + " 1 at the server-wide buffer limit", lines(target).get(0));
+  }
+
+  @Test
+  void releasesBudgetOnlyAfterASuccessfulWrite() {
+    final RecordBudget budget = new RecordBudget(10);
+    final LoggingSession session = session(dir.resolve("out.log").toFile(), 0, budget);
+
+    session.log(record("A"));
+    session.log(record("B"));
+    assertEquals(2, budget.used(), "still resident until written");
+
+    session.process();
+
+    assertEquals(0, budget.used());
+  }
+
+  @Test
+  void keepsHoldingBudgetWhenTheWriteFails() {
+    final File target = dir.resolve("unwritable").toFile();
+    assertTrue(target.mkdir());
+    final RecordBudget budget = new RecordBudget(10);
+    final LoggingSession session = session(target, 0, budget);
+
+    session.log(record("A"));
+    session.process();
+
+    assertEquals(1, budget.used(), "the record is still in memory, so it still costs budget");
+  }
+
+  @Test
+  void abandoningASessionHandsBackItsBudget() {
+    final RecordBudget budget = new RecordBudget(10);
+    final LoggingSession session = session(dir.resolve("out.log").toFile(), 0, budget);
+
+    session.log(record("A"));
+    session.log(record("B"));
+    assertEquals(2, budget.used());
+
+    session.abandon();
+
+    assertEquals(0, budget.used(), "otherwise a dead session starves every future one");
   }
 
   @Test

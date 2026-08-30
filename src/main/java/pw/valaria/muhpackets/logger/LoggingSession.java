@@ -18,9 +18,9 @@ import java.util.logging.Logger;
 /**
  * Buffers records produced on netty threads and drains them to disk from the plugin's flush task.
  *
- * <p>Deliberately knows nothing about the plugin: it takes a logger rather than a
- * {@code MuhPackets}, which is what makes its buffering behaviour testable without a running
- * server.</p>
+ * <p>Deliberately knows nothing about the plugin: it takes a logger and its limits rather than a
+ * {@code MuhPackets}, which is what makes its buffering and overflow behaviour testable without a
+ * running server.</p>
  */
 public class LoggingSession {
   /** How many consecutive failed flushes a closed session tolerates before its records are dropped. */
@@ -31,34 +31,39 @@ public class LoggingSession {
   private final String safeName;
   private final ConcurrentLinkedDeque<LogRecord> records = new ConcurrentLinkedDeque<>();
   private final AtomicInteger buffered = new AtomicInteger();
-  private final AtomicLong dropped = new AtomicLong();
+  /** Records refused because this session was already holding its own maximum. */
+  private final AtomicLong droppedSessionLimit = new AtomicLong();
+  /** Records refused because every session together was holding the server-wide maximum. */
+  private final AtomicLong droppedTotalLimit = new AtomicLong();
   private final File target;
   /**
-   * Upper bound on records held in memory; zero or below means unlimited. Reached only if the
-   * flush task cannot keep up or the log file has become unwritable; without it a stuck session
-   * grows until the server dies.
-   *
-   * <p>Read per record rather than captured once, so lowering the limit during an incident takes
-   * effect on connections that are already open.</p>
+   * Read per record rather than captured once, so lowering the limit during an incident takes
+   * effect on connections that are already open.
    */
   private final IntSupplier maxBufferedRecords;
+  private final RecordBudget budget;
   private volatile boolean isActive = true;
   private boolean writeFailureReported;
   private int drainFailures;
 
   public LoggingSession(Logger logger, String name, String safeName, File target,
-                        IntSupplier maxBufferedRecords) {
+                        IntSupplier maxBufferedRecords, RecordBudget budget) {
     this.logger = logger;
     this.name = name;
     this.safeName = safeName;
     this.target = target;
     this.maxBufferedRecords = maxBufferedRecords;
+    this.budget = budget;
   }
 
   public void log(LogRecord logRecord) {
     final int limit = maxBufferedRecords.getAsInt();
     if (limit > 0 && buffered.get() >= limit) {
-      dropped.incrementAndGet();
+      droppedSessionLimit.incrementAndGet();
+      return;
+    }
+    if (!budget.tryAcquire()) {
+      droppedTotalLimit.incrementAndGet();
       return;
     }
     records.add(logRecord);
@@ -106,13 +111,15 @@ public class LoggingSession {
       buffered.decrementAndGet();
     }
 
-    // Claimed inside the try so a failed write can hand it back; a marker that was never written
+    // Claimed inside the try so a failed write can hand them back; a marker that was never written
     // must stay owed, or the log ends up with an unexplained gap and no count for it anywhere.
-    long lost = 0;
+    long sessionLost = 0;
+    long totalLost = 0;
     try (Writer writer = new BufferedWriter(new FileWriter(target, StandardCharsets.UTF_8, true))) {
-      lost = dropped.getAndSet(0);
-      if (lost > 0) {
-        writer.write(dropMarker(lost));
+      sessionLost = droppedSessionLimit.getAndSet(0);
+      totalLost = droppedTotalLimit.getAndSet(0);
+      if (sessionLost > 0 || totalLost > 0) {
+        writer.write(dropMarker(sessionLost, totalLost));
       }
       for (final LogRecord queued : batch) {
         queued.write(writer);
@@ -121,7 +128,8 @@ public class LoggingSession {
       // is caught below, so a failed flush restores the batch rather than dropping it.
     } catch (IOException e) {
       restore(batch);
-      dropped.addAndGet(lost);
+      droppedSessionLimit.addAndGet(sessionLost);
+      droppedTotalLimit.addAndGet(totalLost);
       drainFailures++;
       if (!writeFailureReported) {
         writeFailureReported = true;
@@ -130,13 +138,15 @@ public class LoggingSession {
       return stillNeeded();
     }
 
+    // Only now are those records genuinely out of memory.
+    budget.release(batch.size());
     writeFailureReported = false;
     drainFailures = 0;
-    if (lost > 0) {
+    if (sessionLost > 0 || totalLost > 0) {
       // Also to the console: the file line is for whoever reads the log afterwards, this is for
       // whoever is watching the server while it happens.
-      logger.warning("Dropped " + lost + " packet(s) for " + safeName
-        + ": buffer limit of " + maxBufferedRecords.getAsInt() + " reached");
+      logger.warning("Dropped " + (sessionLost + totalLost) + " packet(s) for " + safeName
+        + " (" + sessionLost + " at the per-connection limit, " + totalLost + " at the server-wide limit)");
     }
     return stillNeeded();
   }
@@ -148,8 +158,20 @@ public class LoggingSession {
    * rather than exactly: records are dropped from the tail while this drains from the head, so some
    * of what it counts was lost during the previous batch's write.</p>
    */
-  private String dropMarker(long lost) {
-    return "# dropped " + lost + " record(s) before this point: buffer limit reached\n";
+  private String dropMarker(long sessionLost, long totalLost) {
+    final StringBuilder out = new StringBuilder("# dropped ")
+      .append(sessionLost + totalLost)
+      .append(" record(s) before this point:");
+    if (sessionLost > 0) {
+      out.append(' ').append(sessionLost).append(" at the per-connection buffer limit");
+    }
+    if (sessionLost > 0 && totalLost > 0) {
+      out.append(',');
+    }
+    if (totalLost > 0) {
+      out.append(' ').append(totalLost).append(" at the server-wide buffer limit");
+    }
+    return out.append('\n').toString();
   }
 
   /**
@@ -181,11 +203,21 @@ public class LoggingSession {
     if (drainFailures >= MAX_DRAIN_FAILURES) {
       logger.warning("Giving up on " + buffered.get() + " unwritten packet(s) for "
         + safeName + " after " + drainFailures + " failed attempts to write " + target);
-      records.clear();
-      buffered.set(0);
+      abandon();
       return false;
     }
     return true;
+  }
+
+  /**
+   * Discards whatever is still buffered and hands its share of the server-wide budget back.
+   *
+   * <p>Without the release, a session that dies holding records would leak budget permanently and
+   * the server would slowly stop logging anything at all.</p>
+   */
+  public void abandon() {
+    records.clear();
+    budget.release(buffered.getAndSet(0));
   }
 
   @Override

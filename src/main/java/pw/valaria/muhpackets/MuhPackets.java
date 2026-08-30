@@ -14,6 +14,7 @@ import org.bukkit.scheduler.BukkitTask;
 import org.jspecify.annotations.Nullable;
 import pw.valaria.muhpackets.logger.LogRecord;
 import pw.valaria.muhpackets.logger.LoggingSession;
+import pw.valaria.muhpackets.logger.RecordBudget;
 import pw.valaria.muhpackets.network.PacketLoggerHandler;
 
 import java.io.BufferedWriter;
@@ -35,6 +36,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -47,6 +49,13 @@ public final class MuhPackets extends JavaPlugin {
   /** How many suffixed filenames to try before giving up on opening a log. */
   private static final int MAX_FILENAME_ATTEMPTS = 100;
   private final AtomicBoolean running = new AtomicBoolean(false);
+  /**
+   * Server-wide ceiling on buffered records, shared by every session. Starts unlimited and is
+   * given its real capacity by the reloadConfig() call in onEnable.
+   */
+  private final RecordBudget recordBudget = new RecordBudget(0);
+  /** Connections not logged because the session limit was already in use, pending a report. */
+  private final AtomicLong refusedSessions = new AtomicLong();
   /** Whether handlers should still buffer records; cleared first thing on disable. */
   private volatile boolean accepting;
   private @Nullable BukkitTask pollTask;
@@ -159,11 +168,26 @@ public final class MuhPackets extends JavaPlugin {
           getLogger().info("Closing session: " + session.toString());
         }
       }
+      reportRefusedSessions();
     } catch (Throwable thrown) {
       // Never let a failure here kill the repeating task, but do not hide it either.
       getLogger().log(Level.WARNING, "Failed to flush packet logs", thrown);
     } finally {
       running.set(false);
+    }
+  }
+
+  /**
+   * Reports connections that went unlogged, once per flush rather than once per connection.
+   *
+   * <p>A login flood is exactly when this fires, so logging each refusal individually would turn
+   * the console into the same flood.</p>
+   */
+  private void reportRefusedSessions() {
+    final long refused = refusedSessions.getAndSet(0);
+    if (refused > 0) {
+      getLogger().warning("Did not log " + refused + " connection(s): already at the limit of "
+        + getMuhPacketsConfig().getMaxSessions() + " concurrent sessions");
     }
   }
 
@@ -182,6 +206,9 @@ public final class MuhPackets extends JavaPlugin {
   public void reloadConfig() {
     super.reloadConfig();
     this.muhPacketsConfig.reload();
+    // The budget outlives any single reload, so it is retuned rather than replaced; lowering it
+    // below current usage simply refuses new records until the excess has drained.
+    this.recordBudget.setCapacity(this.muhPacketsConfig.getMaxTotalBufferedRecords());
   }
 
   @Override
@@ -236,6 +263,16 @@ public final class MuhPackets extends JavaPlugin {
   }
 
   public @Nullable LoggingSession createLoggingSession(String name) {
+    // Checked before anything touches the disk. Creating a session costs a mkdirs, a createNewFile
+    // and a header write on the netty thread, so under a login flood the refusal has to happen
+    // before that work, not after. Concurrent logins can overshoot the limit slightly; that is
+    // cheaper than serialising every connection through a lock for an approximate cap.
+    final int maxSessions = getMuhPacketsConfig().getMaxSessions();
+    if (maxSessions > 0 && sessions.size() >= maxSessions) {
+      refusedSessions.incrementAndGet();
+      return null;
+    }
+
     // 'name' arrives straight off the wire in a login hello, before the player is authenticated,
     // so it is entirely attacker controlled and must never be used as a path element unfiltered.
     final String safeName = sanitiseSessionName(name);
@@ -255,7 +292,7 @@ public final class MuhPackets extends JavaPlugin {
       return null;
     }
     final LoggingSession loggingSession = new LoggingSession(getLogger(), name, safeName, target,
-      () -> getMuhPacketsConfig().getMaxBufferedRecords());
+      () -> getMuhPacketsConfig().getMaxBufferedRecords(), recordBudget);
     this.sessions.add(loggingSession);
     return loggingSession;
   }

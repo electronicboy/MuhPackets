@@ -6,3 +6,12 @@ clear-old-files-days: -1
 # Records one connection may hold in memory while waiting to be written. Reached only when the
 # flush task cannot keep up or the log file has become unwritable. 0 or below disables the limit.
 max-buffered-records: 100000
+
+# Records ALL connections may hold in memory between them. The per-connection limit above does not
+# bound a login flood, because that multiplies it by the number of connections; this one does.
+# 0 or below disables the limit.
+max-total-buffered-records: 250000
+
+# How many logging sessions may exist at once. Further connections are not logged until one ends.
+# 0 or below disables the limit.
+max-sessions: 200
