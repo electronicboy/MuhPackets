@@ -71,13 +71,16 @@ public final class HandlerRegistry {
     // Snapshot: removing a handler triggers handlerRemoved, which unregisters it from this very
     // set. The monitor is reentrant, so that nested unregister is fine, but iterating live is not.
     for (final ChannelHandlerContext ctx : List.copyOf(contexts)) {
-      contexts.remove(ctx);
       try {
         // Safe from any thread; netty serialises the mutation onto the channel's event loop itself.
         ctx.pipeline().remove(ctx.handler());
+        // Dropped only once the pipeline has actually let go, so what is tracked stays an honest
+        // account of where our handlers still are. handlerRemoved usually gets here first.
+        contexts.remove(ctx);
         removed++;
       } catch (NoSuchElementException e) {
         // Already gone - the channel closed while we were shutting down. Nothing to do.
+        contexts.remove(ctx);
       } catch (Throwable thrown) {
         // One unhealthy channel must not stop us cleaning up the rest.
         logger.log(Level.WARNING, "Could not remove the packet logger from " + ctx.channel(), thrown);
