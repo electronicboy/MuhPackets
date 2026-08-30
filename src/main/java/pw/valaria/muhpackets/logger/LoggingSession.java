@@ -85,12 +85,6 @@ public class LoggingSession {
    * @return whether this session should stay open; false means it is closed and fully drained
    */
   public boolean process() {
-    if (records.isEmpty()) {
-      // No batch means no writer, and the drop count belongs in the file. Leave it pending for the
-      // next flush that does open one rather than reporting it somewhere the log cannot show it.
-      return stillNeeded();
-    }
-
     // Take the batch up front rather than iterating and then removing that many from the head.
     // A ConcurrentLinkedDeque iterator is only weakly consistent, so "the first N entries are the
     // ones just written" holds only while this is the sole thread removing - true today, but it is
@@ -101,6 +95,14 @@ public class LoggingSession {
     while ((record = records.poll()) != null) {
       batch.add(record);
       buffered.decrementAndGet();
+    }
+
+    // An empty batch is still worth a write when records were dropped. The server-wide budget
+    // refuses records without this session ever buffering one, so a starved session can hold a
+    // drop count and an empty queue at once - and if it then closes, stillNeeded() retires it and
+    // the count goes with it. The gap has to be recorded before that happens.
+    if (batch.isEmpty() && droppedSessionLimit.get() == 0 && droppedTotalLimit.get() == 0) {
+      return stillNeeded();
     }
 
     // Claimed inside the try so a failed write can hand them back; a marker that was never written

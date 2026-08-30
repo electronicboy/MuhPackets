@@ -105,6 +105,19 @@ class SessionRateLimiterTest {
   }
 
   @Test
+  void aBurstOfZeroStillGrantsPermits() {
+    // "no burst" is a plausible thing to configure, and it must mean one-at-a-time rather than
+    // silently disabling logging altogether.
+    final SessionRateLimiter limiter = limiter(10, 0);
+
+    assertTrue(limiter.tryAcquire(), "a zero burst must not refuse everything forever");
+    assertFalse(limiter.tryAcquire());
+
+    advanceSeconds(0.1);
+    assertTrue(limiter.tryAcquire(), "and it must still refill at the configured rate");
+  }
+
+  @Test
   void reconfigureClampsBankedPermitsToTheNewBurst() {
     final SessionRateLimiter limiter = limiter(10, 500);
 

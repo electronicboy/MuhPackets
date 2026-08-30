@@ -240,6 +240,43 @@ class LoggingSessionTest {
   }
 
   @Test
+  void reportsDropsEvenWithNothingBuffered() throws IOException {
+    // Budget exhaustion drops records without ever buffering one, so a starved session can have a
+    // drop count and an empty queue at the same time.
+    final RecordBudget budget = new RecordBudget(1);
+    final File target = dir.resolve("starved.log").toFile();
+    final LoggingSession hog = session(dir.resolve("hog.log").toFile(), 0, budget);
+    final LoggingSession starved = session(target, 0, budget);
+
+    hog.log(record("A"));
+    starved.log(record("B"));
+    assertEquals(0, starved.buffered(), "nothing was ever buffered here");
+
+    starved.process();
+
+    assertEquals("# dropped 1 record(s) before this point: 1 at the server-wide buffer limit",
+      lines(target).get(0), "an empty queue must not silence the drop count");
+  }
+
+  @Test
+  void closingSessionReportsItsDropsBeforeItGoesAway() throws IOException {
+    // Otherwise the count dies with the session and the loss is never recorded anywhere.
+    final RecordBudget budget = new RecordBudget(1);
+    final File target = dir.resolve("starved.log").toFile();
+    final LoggingSession hog = session(dir.resolve("hog.log").toFile(), 0, budget);
+    final LoggingSession starved = session(target, 0, budget);
+
+    hog.log(record("A"));
+    starved.log(record("B"));
+    starved.close();
+
+    assertFalse(starved.process(), "closed and empty, so the poll loop drops it");
+
+    assertEquals("# dropped 1 record(s) before this point: 1 at the server-wide buffer limit",
+      lines(target).get(0), "the last flush has to record what was lost");
+  }
+
+  @Test
   void closedAndDrainedSessionReportsItselfFinished() {
     final File target = dir.resolve("out.log").toFile();
     final LoggingSession session = session(target);

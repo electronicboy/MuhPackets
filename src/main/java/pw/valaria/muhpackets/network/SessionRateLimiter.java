@@ -29,15 +29,24 @@ public final class SessionRateLimiter {
   public SessionRateLimiter(LongSupplier nanoTime, double permitsPerSecond, int burst) {
     this.nanoTime = nanoTime;
     this.permitsPerSecond = permitsPerSecond;
-    this.burst = burst;
-    this.tokens = burst;
+    this.burst = usableBurst(burst);
+    this.tokens = this.burst;
     this.lastRefillNanos = nanoTime.getAsLong();
+  }
+
+  /**
+   * A bucket that cannot hold a whole permit can never hand one out, so a burst of zero would not
+   * mean "no burst" - it would silently disable logging entirely while the rate setting looked
+   * perfectly reasonable. Treat it as one at a time instead.
+   */
+  private static double usableBurst(int burst) {
+    return Math.max(1, burst);
   }
 
   /** Re-reads the limits after a config reload, without discarding the current bucket. */
   public synchronized void reconfigure(double permitsPerSecond, int burst) {
     this.permitsPerSecond = permitsPerSecond;
-    this.burst = burst;
+    this.burst = usableBurst(burst);
     // No need to clamp the banked tokens here: the refill in tryAcquire caps them at the burst
     // before every decision, so a lowered burst already bites on the very next acquire.
   }
