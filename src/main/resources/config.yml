@@ -3,14 +3,17 @@ skip-move-packets: true
 ignored-packets: []
 clear-old-files-days: -1
 
-# Records one connection may hold in memory while waiting to be written. Reached only when the
-# flush task cannot keep up or the log file has become unwritable. 0 or below disables the limit.
-max-buffered-records: 100000
+# Records one connection may hold in memory while waiting to be written. The flush task drains
+# everything once a second, so in practice this is the ceiling on records captured per second for
+# a single connection. A casual player runs 200-300 packets per second, so this leaves a normal
+# connection around 30 seconds of slack if a flush stalls, while still capturing far more than
+# enough of a flood to see what is being targeted. 0 or below disables the limit.
+max-buffered-records: 10000
 
 # Records ALL connections may hold in memory between them. The per-connection limit above does not
 # bound a login flood, because that multiplies it by the number of connections; this one does.
-# 0 or below disables the limit.
-max-total-buffered-records: 250000
+# Roughly 300 casual players' worth of one-second buffers. 0 or below disables the limit.
+max-total-buffered-records: 100000
 
 # How many logging sessions may exist at once. Further connections are not logged until one ends.
 # 0 or below disables the limit.
