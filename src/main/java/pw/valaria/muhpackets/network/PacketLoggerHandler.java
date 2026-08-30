@@ -40,7 +40,13 @@ public class PacketLoggerHandler extends ChannelDuplexHandler {
   public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
     // Recorded here rather than in the channel initialiser because this is the context we would
     // need to undo the installation, and it is the only handle on this pipeline we ever get.
-    muhPackets.handlers().register(ctx);
+    if (!muhPackets.handlers().register(ctx)) {
+      // The plugin shut down while this connection was being set up, so onDisable's sweep has
+      // already been and gone. Nothing else will ever take this handler out, and leaving it would
+      // pin the old plugin's classloader for the life of the connection.
+      ctx.pipeline().remove(this);
+      return;
+    }
     super.handlerAdded(ctx);
   }
 

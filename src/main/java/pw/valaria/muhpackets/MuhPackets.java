@@ -250,7 +250,7 @@ public final class MuhPackets extends JavaPlugin {
     // Take our handlers back out of the pipelines they are still sitting in. Each one holds a
     // reference to this plugin instance, and through it this plugin's classloader, so leaving them
     // behind leaks a whole plugin generation per open connection every time the server reloads.
-    final int removed = handlers.removeAll(getLogger());
+    final int removed = handlers.shutdown(getLogger());
     if (removed > 0) {
       getLogger().info("Removed the packet logger from " + removed + " open connection(s)");
     }

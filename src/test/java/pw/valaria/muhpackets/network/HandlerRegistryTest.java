@@ -34,7 +34,10 @@ class HandlerRegistryTest {
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) {
-      registry.register(ctx);
+      if (!registry.register(ctx)) {
+        // Mirrors PacketLoggerHandler: refused registration means take yourself back out.
+        ctx.pipeline().remove(this);
+      }
     }
 
     @Override
@@ -66,7 +69,7 @@ class HandlerRegistryTest {
     final EmbeddedChannel two = channelWith(registry);
     assertNotNull(one.pipeline().get("muh_logger"));
 
-    assertEquals(2, registry.removeAll(logger));
+    assertEquals(2, registry.shutdown(logger));
 
     assertNull(one.pipeline().get("muh_logger"), "handler left behind pins the plugin classloader");
     assertNull(two.pipeline().get("muh_logger"));
@@ -96,16 +99,41 @@ class HandlerRegistryTest {
     channel.pipeline().remove("muh_logger");
     registry.register(ctx);
 
-    assertEquals(0, registry.removeAll(logger), "nothing was removed, but nothing threw either");
+    assertEquals(0, registry.shutdown(logger), "nothing was removed, but nothing threw either");
     assertEquals(0, registry.tracked());
   }
 
   @Test
-  void removeAllIsSafeToCallTwice() {
+  void registrationIsRefusedOnceShutDown() {
+    // A connection accepted while onDisable is sweeping would otherwise install a handler that
+    // nothing will ever remove - holding the dead plugin's classloader open for the life of that
+    // connection, which is the leak this class exists to prevent.
+    final HandlerRegistry registry = new HandlerRegistry();
+    registry.shutdown(logger);
+
+    final EmbeddedChannel late = channelWith(registry);
+
+    assertNull(late.pipeline().get("muh_logger"), "a handler installed after shutdown must not stay");
+    assertEquals(0, registry.tracked());
+  }
+
+  @Test
+  void refusedRegistrationIsNotTracked() {
+    final HandlerRegistry registry = new HandlerRegistry();
+    registry.shutdown(logger);
+
+    channelWith(registry);
+    channelWith(registry);
+
+    assertEquals(0, registry.tracked(), "refused handlers must not accumulate in the registry");
+  }
+
+  @Test
+  void shutdownIsSafeToCallTwice() {
     final HandlerRegistry registry = new HandlerRegistry();
     channelWith(registry);
 
-    assertEquals(1, registry.removeAll(logger));
-    assertEquals(0, registry.removeAll(logger));
+    assertEquals(1, registry.shutdown(logger));
+    assertEquals(0, registry.shutdown(logger));
   }
 }

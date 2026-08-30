@@ -43,6 +43,9 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
   logged while a sustained flood does not. `max-sessions` survives as an off-by-default ceiling.
 - `HandlerRegistry` records the `ChannelHandlerContext` of each installed handler, captured in
   `handlerAdded` and dropped in `handlerRemoved` (which netty also fires when a channel closes).
+  `register` doubles as the shutdown interlock: channels initialise on netty threads while
+  `shutdown` runs on the main thread, so a connection accepted mid-sweep would otherwise install a
+  handler the sweep has already passed. Once shut down it refuses, and the handler removes itself.
   Paper offers no way to enumerate open connections, so this self-kept list is the only handle on
   them. It exists because a handler left in a live pipeline holds a strong reference to the plugin
   instance, and through it the plugin classloader, so without removal every reload leaks a plugin
