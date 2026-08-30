@@ -70,21 +70,13 @@ public class LoggingSession {
     buffered.incrementAndGet();
   }
 
-  /** Records currently held in memory. */
-  public int buffered() {
+  /** Records currently held in memory. Package-private: this exists for the tests. */
+  int buffered() {
     return buffered.get();
   }
 
   public void close() {
     this.isActive = false;
-  }
-
-  public String safeName() {
-    return safeName;
-  }
-
-  public File target() {
-    return target;
   }
 
   /**
@@ -215,7 +207,7 @@ public class LoggingSession {
    * <p>Without the release, a session that dies holding records would leak budget permanently and
    * the server would slowly stop logging anything at all.</p>
    */
-  public void abandon() {
+  void abandon() {
     records.clear();
     budget.release(buffered.getAndSet(0));
   }

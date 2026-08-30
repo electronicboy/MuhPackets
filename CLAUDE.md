@@ -71,7 +71,6 @@ Everything hangs off the netty pipeline; there are no Bukkit events.
   when a new packet type dumps garbage or huge buffers.
 - `MuhPacketsConfig` is a typed snapshot of `config.yml`, re-read on `reloadConfig()`. Its fields are
   volatile because it is written from the main thread and read from netty threads.
-  `NetworkInterceptor` is an empty leftover class.
 
 ## Tuning
 

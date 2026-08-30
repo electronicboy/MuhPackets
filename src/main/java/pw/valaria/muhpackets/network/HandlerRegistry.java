@@ -33,8 +33,8 @@ public final class HandlerRegistry {
     contexts.remove(ctx);
   }
 
-  /** How many pipelines are currently believed to hold one of our handlers. */
-  public int tracked() {
+  /** How many pipelines are believed to hold one of our handlers. Exists for the tests. */
+  int tracked() {
     return contexts.size();
   }
 
